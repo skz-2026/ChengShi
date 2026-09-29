@@ -42,7 +42,13 @@ public sealed record Desk(
     public Desk WithApps(IEnumerable<AllowedApp> apps)
     {
         var distinct = Distinct(apps);
-        return this with { Apps = distinct, Summary = Summarize(distinct) };
+        // 「整个电脑」场景的名单不是白名单（承载的是单软件限时），摘要描述的是场景本身，
+        // 不随名单重写成软件名列表。
+        return this with
+        {
+            Apps = distinct,
+            Summary = Unrestricted ? Summary : Summarize(distinct),
+        };
     }
 
     /// <summary>

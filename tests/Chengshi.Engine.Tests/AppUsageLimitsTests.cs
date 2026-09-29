@@ -63,7 +63,31 @@ public class AppUsageLimitsTests : IDisposable
         public override bool Apply(PolicySpec spec) => true;
     }
 
-    private Fixture Build(int? calcLimit, TimeSpan daily)
+    private Fixture Build(int? calcLimit, TimeSpan daily) => BuildDesk(
+        new Desk(
+            TestDeskId,
+            "测试桌",
+            "记事本与计算器",
+            [
+                new AllowedApp("记事本", "notepad"),
+                new AllowedApp("计算器", "calc", dailyMinutes: calcLimit),
+            ]),
+        daily);
+
+    /// <summary>「整个电脑」场景：不限软件，名单里只有单独限时的软件。</summary>
+    private Fixture BuildFullPc(int? gameLimit, TimeSpan daily) => BuildDesk(
+        new Desk(
+            TestDeskId,
+            "整个电脑",
+            "不限软件",
+            [
+                new AllowedApp("游戏", "game", dailyMinutes: gameLimit),
+                new AllowedApp("记事本", "notepad"),
+            ],
+            Unrestricted: true),
+        daily);
+
+    private Fixture BuildDesk(Desk desk, TimeSpan daily)
     {
         var calendar = new ManualCalendar { Today = Wednesday };
         var clock = new ManualClock();
@@ -72,14 +96,7 @@ public class AppUsageLimitsTests : IDisposable
         familyStore.Save(FamilySettings.Create("1234", (int)daily.TotalMinutes, TestDeskId));
 
         var deskStore = DeskStore.Load(DeskPath);
-        deskStore.Upsert(new Desk(
-            TestDeskId,
-            "测试桌",
-            "记事本与计算器",
-            [
-                new AllowedApp("记事本", "notepad"),
-                new AllowedApp("计算器", "calc", dailyMinutes: calcLimit),
-            ]));
+        deskStore.Upsert(desk);
 
         var probe = new FakeProbe();
         var enforcer = new RecordingEnforcer();
@@ -273,6 +290,134 @@ public class AppUsageLimitsTests : IDisposable
 
         Assert.True(f.Usage("calc.exe").Exhausted);
         Assert.DoesNotContain(f.Host.EnforcedDesk!.Apps, a => a.Key == "calc.exe");
+    }
+
+    // ===== 「整个电脑」场景：不限软件，但可以给指定软件单独限时 =====
+
+    [Fact]
+    public void FullPc_exhausted_app_lands_in_the_deny_list()
+    {
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe"];
+        f.Host.StartGuard();
+
+        f.RunMinutes(29);
+        // 没用完之前谁都拦不着：拦截名单必须是空的，绝不能把「限时名单」当「拒绝名单」。
+        Assert.Empty(f.Host.EnforcedDesk!.Apps);
+
+        f.RunMinutes(2);
+        Assert.True(f.Usage("game.exe").Exhausted);
+
+        // 「整个电脑」书桌的名单语义翻转：里面只剩用完的软件（= 拒绝名单）。
+        var enforced = f.Host.EnforcedDesk!;
+        Assert.Contains(enforced.Apps, a => a.Key == "game.exe");
+        Assert.DoesNotContain(enforced.Apps, a => a.Key == "notepad.exe");
+    }
+
+    [Fact]
+    public void FullPc_app_without_a_limit_never_appears_in_the_deny_list()
+    {
+        using var f = BuildFullPc(gameLimit: null, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe", "notepad.exe"];
+        f.Host.StartGuard();
+
+        f.RunMinutes(120);
+
+        Assert.Empty(f.Host.EnforcedDesk!.Apps);
+        Assert.Equal(120, f.Usage("game.exe").UsedMinutes);
+    }
+
+    [Fact]
+    public void FullPc_yesterday_exhausted_app_is_swept_when_guard_starts()
+    {
+        var calendar = new ManualCalendar { Today = Wednesday };
+        var store = new AppUsageStore(AppUsagePath);
+        store.Save(calendar.Today, new Dictionary<string, double> { ["game.exe"] = 31 * 60 });
+
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe"];
+        f.Host.StartGuard();
+
+        // 开守护的首轮清场拿的就是拒绝名单：昨天额度用完的软件不能因为重启澄时复活。
+        Assert.NotEmpty(f.Enforcer.Swept);
+        var swept = f.Enforcer.Swept[0];
+        Assert.True(swept.Unrestricted);
+        Assert.Contains(swept.Apps, a => a.Key == "game.exe");
+        Assert.DoesNotContain(swept.Apps, a => a.Key == "notepad.exe");
+    }
+
+    [Fact]
+    public void FullPc_removing_the_limit_re_allows_the_app()
+    {
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe"];
+        f.Host.StartGuard();
+        f.RunMinutes(31);
+        Assert.NotEmpty(f.Host.EnforcedDesk!.Apps);
+
+        var desk = f.Host.Desks.Single(d => d.Id == TestDeskId);
+        f.Host.SaveDesk(desk.WithAppLimit("game.exe", null));
+
+        Assert.Empty(f.Host.EnforcedDesk!.Apps);
+        Assert.False(f.Usage("game.exe").Exhausted);
+    }
+
+    [Fact]
+    public void FullPc_usage_rows_carry_the_limit_for_the_dashboard()
+    {
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe"];
+        f.Host.StartGuard();
+        f.RunMinutes(10);
+
+        var row = f.Usage("game.exe");
+        Assert.Equal("游戏", row.DisplayName);
+        Assert.Equal(30, row.LimitMinutes);
+        Assert.Equal(10, row.UsedMinutes);
+        Assert.Equal("已用 10 分钟 / 限 30 分钟", row.Summary);
+    }
+
+    [Fact]
+    public void FullPc_new_day_re_allows_the_app_and_resets_usage()
+    {
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe"];
+        f.Host.StartGuard();
+        f.RunMinutes(31);
+        Assert.NotEmpty(f.Host.EnforcedDesk!.Apps);
+
+        f.Calendar.Today = Wednesday.AddDays(1);
+        f.Clock.Advance(TimeSpan.FromHours(12));
+        f.Host.Tick();
+
+        Assert.Empty(f.Host.EnforcedDesk!.Apps);
+        Assert.Equal(0, f.Usage("game.exe").UsedMinutes);
+    }
+}
+
+/// <summary>「整个电脑」场景的记账键映射：限时软件用 Key，其余用进程名。</summary>
+public class ProcessRunningAppProbeKeyTests
+{
+    [Fact]
+    public void Limited_apps_are_recorded_under_their_key()
+    {
+        var desk = BuiltinDesks.FullPc().WithApps(
+        [
+            new AllowedApp("游戏", "game", @"C:\Games\Bin\game.exe", 30),
+            new AllowedApp("记事本", "notepad"),
+        ]);
+        var byStem = desk.Apps.ToDictionary(
+            a => Path.GetFileNameWithoutExtension(a.FileName.Trim()),
+            a => a.Key,
+            StringComparer.OrdinalIgnoreCase);
+
+        var keys = ProcessRunningAppProbe.MapKeys(byStem, ["game", "notepad", "mspaint"]);
+
+        // 名单里的软件按自己的 Key 记账（限时判定认这个），名单外的按进程名。
+        Assert.Contains(@"C:\Games\Bin\game.exe", keys);
+        Assert.Contains("notepad.exe", keys);
+        Assert.Contains("mspaint", keys);
+        Assert.DoesNotContain("game", keys);
     }
 }
 

@@ -14,6 +14,16 @@ public sealed class AllowlistMatcher
             return true;
         }
 
+        return MatchesDeskRules(process, desk);
+    }
+
+    /// <summary>
+    /// 只看书桌名单规则，不含系统关键进程的保底放行。
+    /// 「整个电脑」场景把名单当拒绝名单用时用它：命中名单还要再过一遍
+    /// AlwaysAllow，系统关键进程就算被家长点名也拦不掉。
+    /// </summary>
+    public bool MatchesDeskRules(ProcessIdentity process, Desk desk)
+    {
         foreach (var rule in desk.Rules)
         {
             if (Matches(process, rule))

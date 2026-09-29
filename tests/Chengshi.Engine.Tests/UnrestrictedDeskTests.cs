@@ -41,6 +41,44 @@ public class UnrestrictedDeskTests
     }
 
     [Fact]
+    public void Unrestricted_desk_kills_only_apps_left_in_its_deny_list()
+    {
+        // EffectiveDesk 交给拦截器的「整个电脑」书桌：名单里只剩当天限时用完的软件。
+        var enforcer = new RecordingEnforcer(() => 42);
+        var desk = BuiltinDesks.FullPc().WithApps([new AllowedApp("游戏", "game")]);
+
+        Assert.True(enforcer.TryEnforce(Process("game.exe", 42), desk));
+        Assert.False(enforcer.TryEnforce(Process("notepad.exe", 42), desk));
+        Assert.Single(enforcer.Killed);
+    }
+
+    [Fact]
+    public void Unrestricted_deny_list_respects_other_sessions()
+    {
+        var enforcer = new RecordingEnforcer(() => 42);
+        var desk = BuiltinDesks.FullPc().WithApps([new AllowedApp("游戏", "game")]);
+
+        // 别的登录用户 / 系统会话里的同名进程不碰。
+        Assert.False(enforcer.TryEnforce(Process("game.exe", 7), desk));
+        Assert.Empty(enforcer.Killed);
+    }
+
+    [Fact]
+    public void Unrestricted_deny_list_spares_system_critical_processes()
+    {
+        var enforcer = new RecordingEnforcer(() => 42);
+        var desk = BuiltinDesks.FullPc().WithApps([new AllowedApp("资源管理器", "explorer")]);
+
+        // AlwaysAllow 的系统关键进程永远放行，家长就算点名也拦不掉。
+        var explorer = new ProcessIdentity(
+            1234, 1, "explorer.exe",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"),
+            null, null, 42);
+        Assert.False(enforcer.TryEnforce(explorer, desk));
+        Assert.Empty(enforcer.Killed);
+    }
+
+    [Fact]
     public void FullPc_desk_is_resolvable_as_builtin()
     {
         var desk = BuiltinDesks.Find(BuiltinDesks.FullPcId);

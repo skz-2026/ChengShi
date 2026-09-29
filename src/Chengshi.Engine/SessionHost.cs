@@ -809,8 +809,10 @@ public sealed class SessionHost : ISessionControl
     private Desk? CurrentDesk() => _machine.Current?.Desk;
 
     /// <summary>
-    /// 交给拦截器的书桌：把今天额度已用完的软件从允许名单里剔除，
-    /// 于是轮询/ETW 的既有逻辑会自然地把它们关掉，不需要另写一套拦截。
+    /// 交给拦截器的书桌，把「当天单独限时已用完」的软件处理成拦截器认识的口径：
+    /// 白名单书桌把它们从允许名单里剔除（轮询/ETW 的既有逻辑会自然关掉名单外的）；
+    /// 「整个电脑」书桌反过来只把它们留下——对这种书桌拦截器把名单当拒绝名单用，
+    /// 其余软件照常放行。两边的记账（RunningKeys）都用原始书桌，不受这里影响。
     /// </summary>
     private Desk? EffectiveDesk()
     {
@@ -829,9 +831,22 @@ public sealed class SessionHost : ISessionControl
             }
         }
 
-        return exhausted.Count == 0
-            ? desk
-            : desk.WithApps(desk.Apps.Where(app => !exhausted.Contains(app.Key)));
+        // 「整个电脑」书桌：名单翻转成拒绝名单——只留当天用完的软件，
+        // 一个都没用完就交空名单（全放行）。注意不能把原始书桌直接交出去：
+        // 它的名单里还有没用完的限时软件，拦截器会当成要关的。
+        if (desk.Unrestricted)
+        {
+            return exhausted.Count == 0
+                ? desk.WithApps([])
+                : desk.WithApps(desk.Apps.Where(app => exhausted.Contains(app.Key)));
+        }
+
+        if (exhausted.Count == 0)
+        {
+            return desk;
+        }
+
+        return desk.WithApps(desk.Apps.Where(app => !exhausted.Contains(app.Key)));
     }
 
     private IReadOnlyList<AppUsage> BuildAppUsage()

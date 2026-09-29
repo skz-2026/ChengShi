@@ -33,13 +33,21 @@ public class ProcessEnforcer : IProcessEnforcer
             return false;
         }
 
-        // 「整个电脑」场景：不限软件，进程一律放行；计时长与到点锁屏由会话状态机负责。
+        // 「整个电脑」场景：软件一律放行；计时长与到点锁屏由会话状态机负责。
+        // 唯一的例外是当天单独限时已用完的软件——EffectiveDesk 只把它们留在名单里
+        // 交进来，名单在这里的含义从「允许」翻转成「拒绝」。系统关键进程
+        // （AlwaysAllow）仍保底放行：拒绝名单匹配不能借用 IsAllowed，
+        // 它的保底放行在这种模式下会被误读成「命中名单」。
         if (desk.Unrestricted)
         {
-            return false;
+            if (desk.Apps.Count == 0
+                || !_matcher.MatchesDeskRules(process, desk)
+                || AlwaysAllow.IsAlwaysAllowed(process.FileName, process.ImagePath))
+            {
+                return false;
+            }
         }
-
-        if (_matcher.IsAllowed(process, desk))
+        else if (_matcher.IsAllowed(process, desk))
         {
             return false;
         }

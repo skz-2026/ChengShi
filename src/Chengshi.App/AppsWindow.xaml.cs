@@ -63,6 +63,7 @@ public partial class AppsWindow : Window
                 {
                     IsChecked = true,
                     App = app with { DisplayName = match.DisplayName },
+                    DailyMinutes = match.DailyMinutes,
                 });
             }
             else
@@ -77,6 +78,7 @@ public partial class AppsWindow : Window
             {
                 IsChecked = true,
                 App = new InstalledApp(leftover.DisplayName, leftover.FileName, leftover.ImagePath, "已选"),
+                DailyMinutes = leftover.DailyMinutes,
             });
         }
 
@@ -141,7 +143,7 @@ public partial class AppsWindow : Window
     {
         Result = _items
             .Where(i => i.IsChecked)
-            .Select(i => i.App.ToAllowed())
+            .Select(i => i.App.ToAllowed(i.DailyMinutes))
             .ToArray();
         DialogResult = true;
     }
@@ -156,6 +158,10 @@ public sealed class AppPickItem
 {
     public bool IsChecked { get; set; }
     public required InstalledApp App { get; init; }
+
+    /// <summary>种子名单里已有的单软件限时，勾选完成时原样带回。</summary>
+    public int? DailyMinutes { get; init; }
+
     public string Title => App.DisplayName;
     public string Subtitle => $"{App.Source}  ·  {App.FileName}";
     public string Key => App.ImagePath ?? App.FileName;

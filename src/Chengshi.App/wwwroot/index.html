@@ -339,8 +339,9 @@
             <div class="scenario-head">
               <span class="scenario-title">单个软件限时</span><span class="scenario-tag">可选</span>
             </div>
-            <div class="scenario-lead">在「能用多久」之内，给某些软件单独设上限：比如游戏每天只给 30 分钟，用完就只关掉它，别的软件照常用。</div>
-            <div class="row" style="max-width:560px">
+            <div class="scenario-lead" id="limitLead">在「能用多久」之内，给某些软件单独设上限：比如游戏每天只给 30 分钟，用完就只关掉它，别的软件照常用。</div>
+            <div class="row wrap" style="max-width:640px">
+              <button id="limitPickApp" class="btn btn-ghost hidden">从电脑挑选软件…</button>
               <select id="limitAppSelect" class="input grow"></select>
               <input id="limitMinutes" class="input" style="width:72px" inputmode="numeric" placeholder="分钟" />
               <button id="addLimit" class="btn btn-outline">加上这条限额</button>

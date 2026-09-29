@@ -290,7 +290,7 @@ Section("10. 单独限额：超额软件从有效书桌剔除");
 }
 
 // ============================================================
-Section("11. 「整个电脑」场景：只限时长、不限软件");
+Section("11. 「整个电脑」场景：只限时长、不限软件（+ 指定软件单独限时）");
 {
     var clock = new ManualClock();
     var calendar = new ManualCalendar { Today = day };
@@ -298,6 +298,35 @@ Section("11. 「整个电脑」场景：只限时长、不限软件");
     host.StartGuard();
     Check("有效书桌就是整机场景（拦截器一律放行）", host.EnforcedDesk!.Unrestricted);
     Check("到点照常走统一锁屏口径", host.Snapshot.IsGuarding && host.Snapshot.Phase == SessionPhase.InDesk);
+}
+
+{
+    // 整个电脑 + 指定软件每天限时：用满只关那一款，其余软件照常。
+    var clock = new ManualClock();
+    var calendar = new ManualCalendar { Today = day };
+    var probe = new FakeProbe { Keys = ["game.exe"] };
+    var deskStore = DeskStore.Load(Path.Combine(root, $"desks-{Guid.NewGuid():N}.json"));
+    deskStore.Upsert(new Desk("sim-fullpc-limit", "整个电脑", "不限软件",
+        [new AllowedApp("游戏", "game", dailyMinutes: 20), new AllowedApp("记事本", "notepad")],
+        Unrestricted: true));
+    var familyStore = FamilyStore.Load(Path.Combine(root, "family-fullpc-limit.json"));
+    familyStore.Save(FamilySettings.Create("1234", 360, "sim-fullpc-limit"));
+    using var host = new SessionHost(
+        clock, deskStore, familyStore, calendar,
+        ScreenTimeStore.Load(calendar, TimeSpan.FromHours(6), Path.Combine(root, "time-fullpc-limit.json")),
+        enforcer: new RecordingEnforcer(), network: new FakeNetworkGuard(),
+        usageLog: new UsageLogStore(Path.Combine(root, "log-fullpc-limit.jsonl")),
+        probe: probe);
+    host.StartGuard();
+    RunMinutes(host, clock, 19);
+    Check("限时没用完前拒绝名单是空的（谁都拦不着）", host.EnforcedDesk!.Apps.Count == 0);
+    RunMinutes(host, clock, 2);
+    var enforced = host.EnforcedDesk!;
+    Check("游戏满 20 分钟后只把它放进拒绝名单（其它软件照常）",
+        enforced.Unrestricted && enforced.Apps.Count == 1 && enforced.Apps[0].Key == "game.exe");
+    Check("用量行带着限额，家长仪表盘能看到还剩多少",
+        host.AppUsage.Single(r => r.Key == "game.exe").LimitMinutes == 20
+            && host.AppUsage.Single(r => r.Key == "game.exe").UsedMinutes >= 20);
 }
 
 // ============================================================

@@ -282,10 +282,21 @@ function renderFormSchedule(s) {
 }
 
 function renderFormLimits(l) {
+  const unres = !!l.unrestricted;
+  // 「整个电脑」场景：软件不在白名单里，得先点「从电脑挑选软件…」点名要限时的那一款。
+  $("#limitPickApp").classList.toggle("hidden", !unres);
+  setText($("#limitLead"), unres
+    ? "不限软件，但可以点名几款单独限时：比如游戏每天只给 30 分钟，用完只关掉它，其它软件照常用。"
+    : "在「能用多久」之内，给某些软件单独设上限：比如游戏每天只给 30 分钟，用完就只关掉它，别的软件照常用。");
+
   const sel = $("#limitAppSelect");
   const focusIn = sel.contains(document.activeElement);
-  setHtml(sel, (l.choices || []).map((c) =>
-    `<option value="${esc(c.key)}">${esc(c.name)}</option>`).join(""));
+  const options = (l.choices || []).map((c) =>
+    `<option value="${esc(c.key)}">${esc(c.name)}</option>`).join("");
+  const placeholder = unres
+    ? "（先点「从电脑挑选软件…」）"
+    : "（先在「能用什么」里加软件）";
+  setHtml(sel, options || `<option value="">${esc(placeholder)}</option>`);
   if (!focusIn && l.selectedKey && sel.querySelector(`option[value="${CSS.escape(l.selectedKey)}"]`)) {
     sel.value = l.selectedKey;
   }
@@ -495,6 +506,7 @@ $("#dayRows").addEventListener("focusout", (e) => {
 });
 
 // 设置页 · 单软件限时
+$("#limitPickApp").addEventListener("click", () => send("pickLimitApp"));
 $("#addLimit").addEventListener("click", () => {
   const key = $("#limitAppSelect").value;
   const n = Math.round(Number($("#limitMinutes").value));
@@ -564,6 +576,7 @@ function demoSend(cmd, args) {
   } else if (cmd === "deskSelect") {
     const desk = { ...LAST["form.desk"], selected: args.id, unrestricted: args.id === "fullpc" };
     dispatch("form.desk", desk);
+    dispatch("form.limits", { ...LAST["form.limits"], unrestricted: args.id === "fullpc" });
   } else if (cmd === "dayTab") {
     dispatch("form.duration", { ...LAST["form.duration"], tab: args.tab });
   } else if (cmd === "setPresetDuration" && args.minutes !== "custom") {

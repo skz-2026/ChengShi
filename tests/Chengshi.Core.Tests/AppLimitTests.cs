@@ -70,6 +70,17 @@ public class AppLimitTests
     }
 
     [Fact]
+    public void Unrestricted_desk_keeps_its_summary_when_apps_change()
+    {
+        // 「整个电脑」场景：名单承载单软件限时，摘要描述场景本身，不能被重写成软件名。
+        var desk = BuiltinDesks.FullPc();
+        var withLimit = desk.WithApps([new AllowedApp("游戏", "game", dailyMinutes: 30)]);
+
+        Assert.Equal(desk.Summary, withLimit.Summary);
+        Assert.True(withLimit.Unrestricted);
+    }
+
+    [Fact]
     public void Desk_with_app_limit_clears_the_limit_when_null()
     {
         var desk = new Desk("test", "测试", "一款", [new AllowedApp("计算器", "calc", dailyMinutes: 30)]);

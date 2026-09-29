@@ -58,6 +58,10 @@ public partial class MainWindow : Window
     private bool _mailSsl = true;
     private string _mailUser = string.Empty;
 
+    // 「整个电脑」场景下家长用软件选择器挑好、还没填分钟数的候选；
+    // 换书桌就作废——它们只服务于给当前书桌加单软件限额。
+    private readonly Dictionary<string, AllowedApp> _pendingLimitPicks = new(StringComparer.OrdinalIgnoreCase);
+
     // 提示语（旧 XAML 里 ParentHint / DashboardHintText / SpikeHintText 的对应物）
     private string _parentHint = string.Empty;
     private string _dashHint = string.Empty;
@@ -335,6 +339,9 @@ public partial class MainWindow : Window
                 break;
             case "removeAppLimit":
                 RemoveAppLimit(ArgStr(args, "key"));
+                break;
+            case "pickLimitApp":
+                PickLimitApp();
                 break;
             case "changePin":
                 ChangePin(ArgStr(args, "old"), ArgStr(args, "new"), ArgStr(args, "confirm"));
@@ -629,6 +636,7 @@ public partial class MainWindow : Window
         }
 
         _selectedDeskId = id;
+        _pendingLimitPicks.Clear();
         PushFormDesk();
         PushFormDuration();
         PushFormLimits();
@@ -1120,6 +1128,30 @@ public partial class MainWindow : Window
         SaveDesk(desk.WithBlockCategories(categories));
     }
 
+    /// <summary>
+    /// 「整个电脑」场景下给单软件限时挑对象：打开软件选择器，挑好的先放进
+    /// 下拉框当候选（不落盘），等家长填上分钟数点「加上这条限额」才写进书桌。
+    /// </summary>
+    private void PickLimitApp()
+    {
+        if (SelectedDesk is not { } desk)
+        {
+            return;
+        }
+
+        var picker = new AppsWindow(desk.Apps) { Owner = this };
+        if (picker.ShowDialog() == true && picker.Result is not null)
+        {
+            _pendingLimitPicks.Clear();
+            foreach (var app in picker.Result)
+            {
+                _pendingLimitPicks[app.Key] = app;
+            }
+
+            PushFormLimits();
+        }
+    }
+
     private void AddAppLimit(string key, int minutes)
     {
         if (SelectedDesk is not { } desk)
@@ -1141,7 +1173,24 @@ public partial class MainWindow : Window
             return;
         }
 
-        var limited = desk.WithAppLimit(key, minutes);
+        // 书桌名单里已有的软件改限额；「整个电脑」场景下家长刚挑选的软件
+        // 还不在名单里，连同限额一起加进去（对这种书桌名单就是限时名单）。
+        Desk? limited;
+        if (desk.Apps.Any(a => string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase)))
+        {
+            limited = desk.WithAppLimit(key, minutes);
+        }
+        else if (_pendingLimitPicks.TryGetValue(key, out var pick))
+        {
+            limited = desk.WithApps(desk.Apps.Append(pick.WithDailyMinutes(minutes)));
+        }
+        else
+        {
+            _parentHint = "先从下拉框里挑一款软件。";
+            PushHint("parent", _parentHint);
+            return;
+        }
+
         if (ReferenceEquals(limited, desk))
         {
             _parentHint = "这条限额已经是这样了。";
@@ -1543,10 +1592,14 @@ public partial class MainWindow : Window
             }
 
             var desk = snapshot.DeskId is null ? null : _host.FindDesk(snapshot.DeskId);
-            tiles = desk?.Apps
-                .Select(a => a.DisplayName)
-                .Distinct(StringComparer.CurrentCultureIgnoreCase)
-                .ToList() ?? [];
+            // 磁贴是「只能用这些」的意思，只有白名单书桌才这么画；
+            // 「整个电脑」场景名单里只有单独限时的软件，不摆出来（写进下面的提示里）。
+            tiles = desk is { Unrestricted: false }
+                ? desk.Apps
+                    .Select(a => a.DisplayName)
+                    .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                    .ToList()
+                : [];
             childHint = string.IsNullOrWhiteSpace(_childHintOverride) ? ChildHintFor(snapshot) : _childHintOverride;
         }
         else
@@ -1645,9 +1698,12 @@ public partial class MainWindow : Window
             {
                 name = desk?.Name ?? "—",
                 summary = desk?.Summary ?? "还没有选书桌。",
-                apps = desk?.Apps.Select(a => a.DisplayName)
-                    .Distinct(StringComparer.CurrentCultureIgnoreCase).ToArray() ?? [],
-                empty = desk is null || desk.Apps.Count == 0,
+                // 「整个电脑」场景名单里只有单独限时的软件，不是「只能用这些」。
+                apps = desk is { Unrestricted: false }
+                    ? desk.Apps.Select(a => a.DisplayName)
+                        .Distinct(StringComparer.CurrentCultureIgnoreCase).ToArray()
+                    : [],
+                empty = desk is null,
             },
             engineText = EngineDetailText(),
             dashHint = _dashHint,
@@ -1955,8 +2011,12 @@ public partial class MainWindow : Window
     private void PushFormDesk()
     {
         var desk = SelectedDesk;
+        // 「整个电脑」是内置书桌；给它加过单软件限额后会落进 desks.json，
+        // 这里统一用下面 Insert(0) 的那张卡展示，避免出现两张一模一样的卡。
         var desks = _host.Desks
-            .Where(d => d.Id is not BuiltinDesks.SpikeId and not BuiltinDesks.LockdownId)
+            .Where(d => d.Id is not BuiltinDesks.SpikeId
+                and not BuiltinDesks.LockdownId
+                and not BuiltinDesks.FullPcId)
             .Select(d => new { id = d.Id, name = d.Name, summary = d.Summary })
             .ToList();
         var names = desk?.Apps
@@ -1967,7 +2027,15 @@ public partial class MainWindow : Window
         var allowedSites = desk?.AllowedSiteList.ToList() ?? [];
         var blockedSites = desk?.BlockedSiteList.ToList() ?? [];
 
-        desks.Insert(0, new { id = BuiltinDesks.FullPcId, name = "整个电脑", summary = "不限制软件，只按时长锁屏" });
+        var fullPcLimited = (_host.FindDesk(BuiltinDesks.FullPcId)?.LimitedApps.Count) ?? 0;
+        desks.Insert(0, new
+        {
+            id = BuiltinDesks.FullPcId,
+            name = "整个电脑",
+            summary = fullPcLimited > 0
+                ? $"不限软件 · {fullPcLimited} 款单独限时"
+                : "不限制软件，只按时长锁屏",
+        });
         var unrestricted = desk?.Unrestricted == true;
 
         Push("form.desk", new
@@ -2039,17 +2107,31 @@ public partial class MainWindow : Window
     private void PushFormLimits()
     {
         var desk = SelectedDesk;
+        var unrestricted = desk?.Unrestricted == true;
         var choices = (desk?.Apps ?? [])
             .GroupBy(a => a.Key, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .Select(a => new { key = a.Key, name = a.DisplayName })
             .ToList();
+
+        // 「整个电脑」场景：软件选择器挑好的候选一并进下拉框（还没写进书桌）。
+        if (unrestricted)
+        {
+            var onDesk = choices.Select(c => c.key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var pick in _pendingLimitPicks.Values
+                         .Where(p => !onDesk.Contains(p.Key))
+                         .OrderBy(p => p.DisplayName, StringComparer.CurrentCultureIgnoreCase))
+            {
+                choices.Add(new { key = pick.Key, name = pick.DisplayName });
+            }
+        }
+
         var rows = (desk?.LimitedApps ?? [])
             .Where(a => a.DailyMinutes is > 0)
             .Select(a => new { key = a.Key, name = a.DisplayName, summary = $"每天 {a.DailyMinutes} 分钟" })
             .ToList();
-        Push("form.limits", new { choices, rows });
+        Push("form.limits", new { unrestricted, choices, rows });
     }
 
     private void PushFormPin()
@@ -2162,6 +2244,14 @@ public partial class MainWindow : Window
     private string ChildHintFor(SessionSnapshot snapshot)
     {
         var desk = snapshot.DeskId is null ? null : _host.FindDesk(snapshot.DeskId);
+        if (desk is { Unrestricted: true })
+        {
+            var limited = desk.LimitedApps.Count;
+            return limited == 0
+                ? "电脑上的软件都能用；今天的时间用完会自动锁屏。"
+                : $"电脑上的软件都能用，其中 {limited} 款每天有时长限制，用完只关那一款。";
+        }
+
         var names = desk?.Apps
             .Select(a => a.DisplayName)
             .Distinct(StringComparer.CurrentCultureIgnoreCase)

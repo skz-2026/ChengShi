@@ -8,8 +8,9 @@ public sealed record InstalledApp(string DisplayName, string FileName, string? I
 
 public static class InstalledAppCatalog
 {
-    public static AllowedApp ToAllowed(this InstalledApp app) =>
-        new(app.DisplayName, app.FileName, app.ImagePath);
+    /// <summary>dailyMinutes 透传单软件限时：家长在名单里挑来挑去不该把已设的限额弄丢。</summary>
+    public static AllowedApp ToAllowed(this InstalledApp app, int? dailyMinutes = null) =>
+        new(app.DisplayName, app.FileName, app.ImagePath, dailyMinutes);
 
     public static IReadOnlyList<InstalledApp> Scan()
     {
