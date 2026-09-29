@@ -522,6 +522,17 @@ select.input { cursor: pointer; }
   transition: transform .18s var(--ease), box-shadow .18s var(--ease);
 }
 .app-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
+.app-tile { position: relative; }
+
+/* 单独限时的软件：磁贴带剩余时间；当天用完的置灰加角标 */
+.tile-locked { opacity: .55; }
+.tile-locked .app-tile-avatar { filter: grayscale(.85); }
+.tile-badge {
+  position: absolute; top: 8px; right: 8px;
+  font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+  color: #8A3D2E; background: rgba(255, 176, 148, .75); border: 1px solid rgba(178, 92, 66, .5);
+}
+.tile-note { font-size: 11px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .app-tile-avatar {
   width: 48px; height: 48px; margin: 0 auto;
   border-radius: 13px; color: #fff;

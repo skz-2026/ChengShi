@@ -106,6 +106,14 @@ function renderState(s) {
     banner.classList.toggle("banner-grace", !!grace);
     banner.classList.toggle("banner-warn", !grace && !!warn);
     setText(banner, grace || warn || "");
+
+    // 单软件限时的提醒：总时长的横幅之外，正在用的限时软件临近用完 / 刚被关时单独一条。
+    const appBanner = $("#deskAppBanner");
+    const an = s.appNotice;
+    appBanner.className = "desk-banner " + (an && an.tone === "over" ? "banner-grace" : "banner-warn");
+    if (an) setText(appBanner, an.text);
+    appBanner.classList.toggle("hidden", !an);
+
     renderTiles(s.tiles);
     setHtml($("#childBlocked"), (s.blocked || [])
       .map((b) => `<span class="chip chip-warn">${esc(b)}</span>`).join(""));
@@ -132,9 +140,11 @@ function renderTiles(tiles) {
     return palette[h % palette.length];
   };
   setHtml($("#childTiles"), (tiles || []).map((t) => `
-    <div class="app-tile">
+    <div class="app-tile ${t.locked ? "tile-locked" : ""}" title="${esc(t.note || t.name)}">
       <div class="app-tile-avatar" style="background:${hue(t.name)}">${esc(t.name.charAt(0).toUpperCase())}</div>
-      <div class="app-tile-name" title="${esc(t.name)}">${esc(t.name)}</div>
+      ${t.locked ? '<span class="tile-badge">今天用完</span>' : ""}
+      <div class="app-tile-name">${esc(t.name)}</div>
+      ${t.note && !t.locked ? `<div class="tile-note">${esc(t.note)}</div>` : ""}
     </div>`).join(""));
 }
 
@@ -612,7 +622,13 @@ function showDemoView(v) {
       ...base, view: "desk", closeHidden: false,
       caption: "今天还剩", remainingText: "0:42:18",
       childHint: "只能用 记事本、计算器、Word。其它软件会被关掉。",
-      tiles: [{ name: "记事本" }, { name: "计算器" }, { name: "Word" }, { name: "词典" }],
+      appNotice: { text: "「游戏」还剩 3 分钟，准备收尾吧。", tone: "soon" },
+      tiles: [
+        { name: "记事本" },
+        { name: "计算器", note: "还剩 12 分钟" },
+        { name: "Word" }, { name: "词典" },
+        { name: "游戏", locked: true },
+      ],
       blocked: ["Google Chrome"], askParent: true, askMore: false,
     });
   } else {

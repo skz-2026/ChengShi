@@ -393,6 +393,42 @@ public class AppUsageLimitsTests : IDisposable
         Assert.Empty(f.Host.EnforcedDesk!.Apps);
         Assert.Equal(0, f.Usage("game.exe").UsedMinutes);
     }
+
+    [Fact]
+    public void FullPc_running_flag_follows_the_probe_and_clears_when_guard_stops()
+    {
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe"];
+        f.Host.StartGuard();
+        f.RunMinutes(3);
+        Assert.True(f.Usage("game.exe").Running);
+
+        // 软件关掉后 Running 跟着灭——孩子端的临近提醒只对开着的软件弹。
+        f.Probe.Keys = [];
+        f.RunMinutes(1);
+        Assert.False(f.Usage("game.exe").Running);
+
+        // 守护结束后也不该有「正在使用」的残留。
+        f.Probe.Keys = ["game.exe"];
+        f.RunMinutes(1);
+        f.Host.Stop("1234");
+        Assert.False(f.Usage("game.exe").Running);
+    }
+
+    [Fact]
+    public void FullPc_usage_lists_unlisted_apps_by_process_name()
+    {
+        using var f = BuildFullPc(gameLimit: 30, TimeSpan.FromHours(6));
+        f.Probe.Keys = ["game.exe", "mspaint"];
+        f.Host.StartGuard();
+        f.RunMinutes(5);
+
+        // 名单外的软件按进程名入列（无限额），统计页「今天」才和历史天数同口径。
+        var row = f.Host.AppUsage.Single(r => r.Key == "mspaint");
+        Assert.Equal(5, row.UsedMinutes);
+        Assert.Null(row.LimitMinutes);
+        Assert.Equal("mspaint", row.DisplayName);
+    }
 }
 
 /// <summary>「整个电脑」场景的记账键映射：限时软件用 Key，其余用进程名。</summary>

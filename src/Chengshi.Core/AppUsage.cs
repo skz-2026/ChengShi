@@ -4,14 +4,26 @@ namespace Chengshi.Core;
 
 /// <summary>
 /// 单个软件今天用掉的时间。LimitMinutes 为空表示不单独限时，只受每天总时长约束。
+/// Running 表示最近一次记账时它正在运行（孩子端正用它）——临近限时/刚被关的提醒只对它弹。
 /// </summary>
-public sealed record AppUsage(string Key, string DisplayName, int UsedMinutes, int? LimitMinutes)
+public sealed record AppUsage(
+    string Key,
+    string DisplayName,
+    int UsedMinutes,
+    int? LimitMinutes,
+    bool Running = false)
 {
     [JsonIgnore]
     public bool HasLimit => LimitMinutes is > 0;
 
     [JsonIgnore]
     public bool Exhausted => HasLimit && UsedMinutes >= LimitMinutes!.Value;
+
+    /// <summary>今天还剩多少分钟（不足 1 分钟按 1 分钟算，给「还剩 N 分钟」的提醒用）。</summary>
+    [JsonIgnore]
+    public int RemainingMinutes => HasLimit
+        ? Math.Max(0, LimitMinutes!.Value - UsedMinutes)
+        : 0;
 
     /// <summary>0–1 的额度消耗比例，没有限额时恒为 0（不画进度条）。</summary>
     [JsonIgnore]

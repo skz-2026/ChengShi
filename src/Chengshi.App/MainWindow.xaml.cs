@@ -948,7 +948,9 @@ public partial class MainWindow : Window
         try
         {
             var result = _host.GrantExtra(pin, 15);
-            _dashHint = result.Ok ? "已奖励 15 分钟，孩子继续玩吧。" : result.Hint;
+            _dashHint = result.Ok
+                ? "已奖励 15 分钟，孩子继续玩吧。" + LimitNoteIfAny()
+                : result.Hint;
             PushHint("dashHint", _dashHint);
         }
         catch (Exception ex) when (ex is InvalidOperationException or RemoteFaultException)
@@ -990,10 +992,16 @@ public partial class MainWindow : Window
         var dialog = new ExtendTimeWindow(_host) { Owner = this };
         if (dialog.ShowDialog() == true && dialog.Granted)
         {
-            _childHintOverride = "家长批了加时，继续吧。";
+            _childHintOverride = "家长批了加时，继续吧。" + LimitNoteIfAny();
             PushState(_host.Snapshot);
         }
     }
+
+    /// <summary>加时只加总时长；被单独限时的软件不随加时恢复——当场说明白，免得孩子以为坏了。</summary>
+    private string LimitNoteIfAny() =>
+        _host.AppUsage.Any(r => r.Exhausted)
+            ? "（单独限时的软件不随加时恢复，明天自动恢复。）"
+            : string.Empty;
 
     private bool TryParentPin(string prompt, out string pin)
     {
@@ -1531,7 +1539,16 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            var label = Path.GetFileNameWithoutExtension(blocked.FileName);
+            // 撞上「单软件限时用完」的给出原因，别让孩子对着进程名一头雾水。
+            var limitedOut = _host.AppUsage.FirstOrDefault(r =>
+                r.Exhausted
+                && string.Equals(
+                    Path.GetFileName(r.Key),
+                    Path.GetFileName(blocked.FileName),
+                    StringComparison.OrdinalIgnoreCase));
+            var label = limitedOut is not null
+                ? $"{limitedOut.DisplayName} · 今天限时用完"
+                : Path.GetFileNameWithoutExtension(blocked.FileName);
             _blocked.Insert(0, label);
             if (_blocked.Count > 8)
             {
@@ -1554,10 +1571,12 @@ public partial class MainWindow : Window
 
         string caption;
         string childHint;
-        List<string> tiles = [];
+        List<object> tiles = [];
         var askMore = false;
         string? graceText = null;
         string? warningText = null;
+        string? appNoticeText = null;
+        string? appNoticeTone = null;
         if (timeUp)
         {
             caption = "今天的屏幕时间用完了";
@@ -1575,6 +1594,7 @@ public partial class MainWindow : Window
             tiles = BuiltinDesks.Spike().Apps
                 .Select(a => a.DisplayName)
                 .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .Select(name => (object)new { name, locked = false, note = (string?)null })
                 .ToList();
         }
         else if (child)
@@ -1592,14 +1612,17 @@ public partial class MainWindow : Window
             }
 
             var desk = snapshot.DeskId is null ? null : _host.FindDesk(snapshot.DeskId);
+            var usage = _host.AppUsage;
             // 磁贴是「只能用这些」的意思，只有白名单书桌才这么画；
-            // 「整个电脑」场景名单里只有单独限时的软件，不摆出来（写进下面的提示里）。
+            // 有限额的软件带上「还剩 N 分钟」，用完的置灰——哪款还能用、能用多久一目了然。
             tiles = desk is { Unrestricted: false }
                 ? desk.Apps
-                    .Select(a => a.DisplayName)
-                    .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                    .GroupBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                    .Select(group => group.FirstOrDefault(a => HasLimit(a.Key, usage)) ?? group.First())
+                    .Select(a => TileFor(a, usage.FirstOrDefault(r => string.Equals(r.Key, a.Key, StringComparison.OrdinalIgnoreCase))))
                     .ToList()
                 : [];
+            (appNoticeText, appNoticeTone) = AppNoticeFor(usage);
             childHint = string.IsNullOrWhiteSpace(_childHintOverride) ? ChildHintFor(snapshot) : _childHintOverride;
         }
         else
@@ -1636,7 +1659,8 @@ public partial class MainWindow : Window
             childHint,
             graceText,
             warningText,
-            tiles = tiles.Select(n => new { name = n }),
+            appNotice = appNoticeText is null ? null : new { text = appNoticeText, tone = appNoticeTone },
+            tiles,
             blocked = _blocked.ToList(),
             askParent = snapshot.Parental,
             askMore,
@@ -1647,6 +1671,54 @@ public partial class MainWindow : Window
                 detail = EngineDetailText(),
             },
         });
+    }
+
+    private static bool HasLimit(string key, IReadOnlyList<AppUsage> usage) =>
+        usage.Any(r => string.Equals(r.Key, key, StringComparison.OrdinalIgnoreCase) && r.HasLimit);
+
+    private static object TileFor(AllowedApp app, AppUsage? row)
+    {
+        var locked = row?.Exhausted == true;
+        return new
+        {
+            name = app.DisplayName,
+            locked,
+            note = row is { HasLimit: true }
+                ? locked ? "今天用完" : $"还剩 {row.RemainingMinutes} 分钟"
+                : null as string,
+        };
+    }
+
+    // 「用完被关」的提醒只闪一秒的话孩子根本读不完：检测到就挂住 30 秒。
+    private const double AppNoticeHoldSeconds = 30d;
+    private string? _appOverNotice;
+    private DateTime _appOverNoticeUntil = DateTime.MinValue;
+
+    /// <summary>
+    /// 正在使用的限时软件的提醒：刚被关（挂 30 秒）优先于「还剩 ≤5 分钟」。
+    /// 没在运行的软件不弹——没开着它就谈不上突然袭击。
+    /// </summary>
+    private (string? Text, string? Tone) AppNoticeFor(IReadOnlyList<AppUsage> usage)
+    {
+        var justClosed = usage.FirstOrDefault(r => r.Exhausted && r.Running);
+        if (justClosed is not null)
+        {
+            _appOverNotice = $"「{justClosed.DisplayName}」今天的 {justClosed.LimitMinutes} 分钟用完了，已自动关闭；其它软件照常，明天恢复。";
+            _appOverNoticeUntil = DateTime.Now.AddSeconds(AppNoticeHoldSeconds);
+        }
+
+        if (_appOverNotice is not null && DateTime.Now < _appOverNoticeUntil)
+        {
+            return (_appOverNotice, "over");
+        }
+
+        var soon = usage
+            .Where(r => r is { HasLimit: true, Running: true, Exhausted: false } && r.RemainingMinutes <= 5)
+            .OrderBy(r => r.RemainingMinutes)
+            .FirstOrDefault();
+        return soon is null
+            ? (null, null)
+            : ($"「{soon.DisplayName}」还剩 {soon.RemainingMinutes} 分钟，准备收尾吧。", "soon");
     }
 
     private void PushDashboard(SessionSnapshot snapshot)
@@ -1690,7 +1762,7 @@ public partial class MainWindow : Window
                 new { id = "code", name = "编程", summary = DeskCardSummary(BuiltinDesks.CodeId, "IDE + 终端") },
             },
             week = new { empty = _weekEmptyCache, rows = _weekRowsCache ?? [] },
-            appUsage = AppUsagePayload(),
+            appUsage = AppUsagePayload(desk),
             blocked = _blocked.ToList(),
             guardBtn = new { text = guardText, enabled = guardEnabled },
             rewardVisible = _host.IsConfigured,
@@ -1947,17 +2019,30 @@ public partial class MainWindow : Window
 
     private string _appUsageSignature = string.Empty;
 
-    /// <summary>今天每个软件用了多久。用量每秒变化，但只有内容真的变了才重推列表。</summary>
-    private object AppUsagePayload()
+    /// <summary>
+    /// 今天每个软件用了多久。用量每秒变化，但只有内容真的变了才重推列表。
+    /// 「整个电脑」场景的用量行里还有一串按进程名记的系统噪音（explorer 之类），
+    /// 仪表盘只摆有限额的行并指路统计页；白名单书桌照旧全列。
+    /// </summary>
+    private object AppUsagePayload(Desk? desk)
     {
         var rows = _host.AppUsage ?? [];
-        var tracked = rows.Where(r => r.UsedMinutes > 0 || r.HasLimit).ToList();
-        var usedCount = tracked.Count(r => r.UsedMinutes > 0);
+        var unrestricted = desk?.Unrestricted == true;
+        var tracked = (unrestricted
+                ? rows.Where(r => r.HasLimit)
+                : rows.Where(r => r.UsedMinutes > 0 || r.HasLimit))
+            .ToList();
+        var usedCount = rows.Count(r => r.UsedMinutes > 0);
         var overCount = tracked.Count(r => r.Exhausted);
         var hint = tracked.Count == 0
             ? string.Empty
             : overCount > 0 ? $"{usedCount} 款在用 · {overCount} 款额度用完" : $"{usedCount} 款在用";
-        var signature = string.Join("|", rows.Select(r => $"{r.Key}:{r.UsedMinutes}:{r.LimitMinutes}")) + "|" + hint;
+        if (unrestricted && tracked.Count > 0)
+        {
+            hint += " · 全部软件的明细见「使用统计」";
+        }
+
+        var signature = string.Join("|", rows.Select(r => $"{r.Key}:{r.UsedMinutes}:{r.LimitMinutes}:{r.Running}")) + "|" + hint;
         var changed = signature != _appUsageSignature;
         _appUsageSignature = signature;
 

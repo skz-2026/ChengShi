@@ -320,6 +320,8 @@ Section("11. 「整个电脑」场景：只限时长、不限软件（+ 指定�
     host.StartGuard();
     RunMinutes(host, clock, 19);
     Check("限时没用完前拒绝名单是空的（谁都拦不着）", host.EnforcedDesk!.Apps.Count == 0);
+    Check("正在使用的限时软件带 Running 标记（孩子端提醒用）",
+        host.AppUsage.Single(r => r.Key == "game.exe").Running);
     RunMinutes(host, clock, 2);
     var enforced = host.EnforcedDesk!;
     Check("游戏满 20 分钟后只把它放进拒绝名单（其它软件照常）",

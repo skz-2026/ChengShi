@@ -260,4 +260,18 @@ public class AppLimitTests
         Assert.DoesNotContain("fraction", json);
         Assert.DoesNotContain("hasLimit", json);
     }
+
+    [Fact]
+    public void Running_defaults_to_false_and_remaining_minutes_tracks_the_limit()
+    {
+        var usage = new AppUsage("calc.exe", "计算器", 15, 30);
+
+        Assert.False(usage.Running);
+        Assert.Equal(15, usage.RemainingMinutes);
+        Assert.Equal(0, new AppUsage("calc.exe", "计算器", 30, 30).RemainingMinutes);
+        Assert.Equal(0, new AppUsage("notepad.exe", "记事本", 99, null).RemainingMinutes);
+
+        var json = JsonSerializer.Serialize(new AppUsage("calc.exe", "计算器", 15, 30, Running: true), Json);
+        Assert.Contains("\"running\":true", json);
+    }
 }

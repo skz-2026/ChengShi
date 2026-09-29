@@ -27,6 +27,9 @@ public sealed class SessionHost : ISessionControl
     private readonly IRunningAppProbe _probe;
     private readonly AppUsageStore _appUsageStore;
     private readonly AppUsageTracker _appUsage = new();
+
+    /// <summary>最近一次记账时正在运行的「有限额」软件——孩子端临近提醒只对这些弹。</summary>
+    private readonly HashSet<string> _runningLimitedKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly PinGate _pinGate;
     private readonly SmtpStore _smtpStore;
     private readonly PinRecoveryService _emailRecovery;
@@ -460,6 +463,7 @@ public sealed class SessionHost : ISessionControl
             // 用「有效书桌」做首轮清场：昨天额度就用完的软件不该因为重启澄时而复活。
             var enforce = EffectiveDesk() ?? desk;
             _enforcer.SweepRunning(enforce);
+            _runningLimitedKeys.Clear();
         }
 
         RefreshNetwork();
@@ -526,6 +530,8 @@ public sealed class SessionHost : ISessionControl
     {
         PersistUsage(_machine.Snapshot());
         var result = _machine.Stop(pin);
+        // 场次没了，「正在使用的限时软件」也一并清零，别给界面留过期状态。
+        _runningLimitedKeys.Clear();
         RefreshNetwork();
         RefreshSitePolicy();
         StateChanged?.Invoke(result.Snapshot);
@@ -858,7 +864,7 @@ public sealed class SessionHost : ISessionControl
             return [];
         }
 
-        return desk.Apps
+        var rows = desk.Apps
             .GroupBy(app => app.Key, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
@@ -867,16 +873,44 @@ public sealed class SessionHost : ISessionControl
                     app.Key,
                     app.DisplayName,
                     _appUsage.UsedMinutes(app.Key),
-                    app.DailyMinutes);
+                    app.DailyMinutes,
+                    _runningLimitedKeys.Contains(app.Key));
             })
+            .ToList();
+
+        // 「整个电脑」场景：tracker 里其余键（按进程名记的）也列出来，
+        // 统计页的「今天」才和历史天数同口径（那边跨天落盘时记的是全部进程）。
+        if (desk.Unrestricted)
+        {
+            var known = rows.Select(row => row.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in _appUsage.Snapshot().Where(pair => pair.Value > 0 && !known.Contains(pair.Key)))
+            {
+                rows.Add(new AppUsage(pair.Key, DisplayNameFromKey(pair.Key), Minutes(pair.Value), null));
+            }
+        }
+
+        return rows
             .OrderByDescending(row => row.UsedMinutes)
             .ThenBy(row => row.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
+
+        static int Minutes(double seconds) =>
+            (int)Math.Round(seconds / 60d, MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>Key 可能是完整路径也可能是裸进程名，展示名一律取文件名去扩展。</summary>
+    private static string DisplayNameFromKey(string key)
+    {
+        var leaf = Path.GetFileName(key.Trim());
+        return leaf.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? leaf[..^4]
+            : leaf;
     }
 
     /// <summary>
     /// 按真实流逝时间给「正在运行的被允许软件」记账。只在书桌会话进行中计，
     /// 与每天总额度的口径保持一致；锁屏期间暂停。
+    /// 同时记住「此刻正在运行的限时软件」——孩子端的临近提醒只对这些弹，没开着的软件不打扰。
     /// </summary>
     private void SampleAppUsage(SessionSnapshot snapshot, double delta, double elapsed, bool locked)
     {
@@ -885,7 +919,13 @@ public sealed class SessionHost : ISessionControl
             return;
         }
 
-        if (snapshot.Phase != SessionPhase.InDesk || locked || delta > MaxUsageSampleSeconds)
+        if (snapshot.Phase != SessionPhase.InDesk)
+        {
+            _runningLimitedKeys.Clear();
+            return;
+        }
+
+        if (locked || delta > MaxUsageSampleSeconds)
         {
             return;
         }
@@ -896,7 +936,18 @@ public sealed class SessionHost : ISessionControl
             return;
         }
 
-        foreach (var key in _probe.RunningKeys(desk))
+        var running = _probe.RunningKeys(desk);
+        var limitedKeys = desk.Apps
+            .Where(app => app.DailyMinutes is > 0)
+            .Select(app => app.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _runningLimitedKeys.Clear();
+        foreach (var key in running.Where(limitedKeys.Contains))
+        {
+            _runningLimitedKeys.Add(key);
+        }
+
+        foreach (var key in running)
         {
             _appUsage.Add(key, delta);
         }
