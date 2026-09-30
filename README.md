@@ -69,7 +69,7 @@ Chengshi.Service   Windows 服务「澄时守护服务」（SYSTEM，延迟自�
 
 ```powershell
 scripts\run-spike.ps1            # 构建并跑 App（本地守护模式，无需服务）
-dotnet test Chengshi.slnx        # 全部测试（Core 78 + Engine 93，含安全回归）
+dotnet test Chengshi.slnx        # 全部测试（Core 78 + Engine 95，含安全回归）
 dotnet run --project tools\Probe # 诊断：服务在不在、配置是什么
 dotnet run --project tools\Sim    # 全功能仿真：56 项产品功能检查（假适配器，不碰真实进程/网络/注册表）
 scripts\package.ps1              # 打包：产出 dist\ChengshiSetup.exe（双击即装）与分发 zip

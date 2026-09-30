@@ -36,7 +36,18 @@ public sealed class SessionClient : ISessionControl
     public static SessionClient Connect(TimeSpan? timeout = null, string? pipeName = null, bool verifyServer = false)
     {
         var client = new SessionClient(pipeName ?? PipeNames.Default, verifyServer);
-        client.ConnectCore(timeout ?? TimeSpan.FromSeconds(3), verifyServer);
+        try
+        {
+            client.ConnectCore(timeout ?? TimeSpan.FromSeconds(3), verifyServer);
+        }
+        catch (Exception)
+        {
+            // 握手失败也要把已连上的管道放干净：界面程序不 Dispose 这个半成品的话，
+            // 句柄泄漏会让服务端的接收一直挂着等一个再也不说话的客户端。
+            client.Dispose();
+            throw;
+        }
+
         return client;
     }
 

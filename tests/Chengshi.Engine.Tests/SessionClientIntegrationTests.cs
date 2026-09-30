@@ -161,6 +161,48 @@ public class SessionClientIntegrationTests : IDisposable
         }
     }
 
+    [Fact]
+    public void A_stuck_connection_does_not_block_new_clients()
+    {
+        // 真机事故的回归：一条「连上后既不说话也不断开」的僵尸连接曾把单实例串行的
+        // 接收循环堵死——服务进程活着，管道却永远没人应答。并行服务后新客户端必须照常工作。
+        var (host, server, _) = CreateServer();
+        using (host)
+        using (server)
+        {
+            using var zombie = PipeFactory.CreateClient(_pipe);
+            zombie.Connect(3000);
+
+            using var client = SessionClient.Connect(TimeSpan.FromSeconds(5), _pipe);
+            Assert.True(client.IsConfigured);
+            Assert.True(client.VerifyParentPin("1234"));
+            var start = client.StartGuard();
+            Assert.Equal(StartSessionStatus.Started, start.Status);
+            Assert.True(client.IsGuarding);
+        }
+    }
+
+    [Fact]
+    public void Two_clients_can_connect_at_the_same_time()
+    {
+        var (host, server, _) = CreateServer();
+        using (host)
+        using (server)
+        {
+            using var first = SessionClient.Connect(TimeSpan.FromSeconds(5), _pipe);
+            using var second = SessionClient.Connect(TimeSpan.FromSeconds(5), _pipe);
+
+            Assert.True(first.IsConfigured);
+            Assert.True(second.IsConfigured);
+
+            // 各自的连接独立验证家长密码、独立操作。
+            Assert.True(first.VerifyParentPin("1234"));
+            Assert.True(second.VerifyParentPin("1234"));
+            Assert.Equal(StartSessionStatus.Started, first.StartGuard().Status);
+            Assert.Equal(StartSessionStatus.AlreadyRunning, second.StartGuard().Status);
+        }
+    }
+
     private (SessionHost Host, NamedPipeSessionServer Server, ManualClock Clock) CreateServer()
     {
         var host = NewHost(new NoopEnforcer(), out var clock);

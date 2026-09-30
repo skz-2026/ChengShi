@@ -63,29 +63,55 @@ public sealed class NamedPipeSessionServer : IDisposable
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
+        var firstInstance = true;
         while (!cancellationToken.IsCancellationRequested)
         {
             NamedPipeServerStream? server = null;
             try
             {
-                server = PipeFactory.CreateServer(_pipeName);
+                server = PipeFactory.CreateServer(_pipeName, firstInstance);
+                firstInstance = false;
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
                 _log?.Invoke("有客户端连上了守护管道。");
-                await ServeClientAsync(server, cancellationToken).ConfigureAwait(false);
-                _log?.Invoke("客户端已断开。");
+
+                // 并行服务，立刻回去等下一位：任何一条连接卡死（客户端不读不写也不断开）
+                // 都不会堵住接收循环——单实例串行时代这种卡死会让服务「活着但失联」。
+                var serving = server;
+                server = null; // 所有权移交，finally 不再兜底释放
+                _ = ServeClientLoggedAsync(serving, cancellationToken);
             }
             catch (OperationCanceledException)
             {
                 break;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                // 静默吞掉异常曾让一次事故无迹可查：创建失败（比如旧实例没退干净）会
+                // 每 400ms 重试一次，日志里必须看得见。
+                _log?.Invoke($"守护管道接收异常，稍后重试：{ex.Message}");
                 await Task.Delay(400, CancellationToken.None).ConfigureAwait(false);
             }
             finally
             {
                 server?.Dispose();
             }
+        }
+    }
+
+    private async Task ServeClientLoggedAsync(NamedPipeServerStream stream, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ServeClientAsync(stream, cancellationToken).ConfigureAwait(false);
+            _log?.Invoke("客户端已断开。");
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"服务客户端连接出错：{ex.Message}");
+        }
+        finally
+        {
+            stream.Dispose();
         }
     }
 

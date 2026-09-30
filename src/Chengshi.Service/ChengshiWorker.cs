@@ -45,13 +45,23 @@ public sealed class ChengshiWorker : BackgroundService
         {
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             {
-                _host.Tick();
-
-                // 界面程序走管道时这里总是最新；只有它没连上服务、自己改磁盘时，
-                // 才需要热刷新跟上。每 5 秒核对一次，开销可忽略。
-                if (++ticks % 5 == 0)
+                // 心跳里任何一次异常都不许逃出去：这个循环一挂，using 会把管道服务器
+                // 一并 Dispose，进程却还活着——服务看起来在跑，界面却永远连不上
+                // （真机上出过这种「活着但失联」的事故）。记日志、下一秒继续。
+                try
                 {
-                    _host.RefreshFromDisk();
+                    _host.Tick();
+
+                    // 界面程序走管道时这里总是最新；只有它没连上服务、自己改磁盘时，
+                    // 才需要热刷新跟上。每 5 秒核对一次，开销可忽略。
+                    if (++ticks % 5 == 0)
+                    {
+                        _host.RefreshFromDisk();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "守护心跳第 {Ticks} 拍出错，已跳过。", ticks);
                 }
             }
         }

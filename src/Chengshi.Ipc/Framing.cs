@@ -95,8 +95,10 @@ public static class PipeFactory
     /// 服务以 SYSTEM 运行，.NET 默认 DACL 只给普通用户读权限，
     /// 界面程序连发消息都做不到。这里用 CreateNamedPipe 显式授权：
     /// SYSTEM/Administrators 完全控制，Authenticated Users 可读写。
+    /// maxInstances 允许多个实例并存：服务端并行服务多条连接，
+    /// 一条连接卡死时新客户端照样能连上（曾出过单实例串行导致整台服务失联的事故）。
     /// </summary>
-    public static NamedPipeServerStream CreateServer(string name = PipeNames.Default)
+    public static NamedPipeServerStream CreateServer(string name = PipeNames.Default, bool firstInstance = true)
     {
         const string sddl = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGW;;;AU)";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
@@ -114,11 +116,19 @@ public static class PipeFactory
                 InheritHandle = 0,
             };
 
+            // FirstPipeInstance 只对名字的第一个实例有意义；第二个实例再带这个标志
+            // 会直接失败（名字已被自己人占用）。
+            var openMode = PipeAccessDuplex | FileFlagOverlapped;
+            if (firstInstance)
+            {
+                openMode |= FileFlagFirstPipeInstance;
+            }
+
             var handle = CreateNamedPipe(
                 @"\\.\pipe\" + name,
-                PipeAccessDuplex | FileFlagOverlapped | FileFlagFirstPipeInstance,
+                openMode,
                 PipeTypeByte | PipeReadmodeByte | PipeWait,
-                1,
+                4,
                 0,
                 0,
                 0,
