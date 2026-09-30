@@ -8,10 +8,14 @@ using Chengshi.Ipc;
 
 namespace Chengshi.App;
 
-/// <summary>首次打开时的引导式设置：欢迎 → 设家长密码 → 选书桌和时长 → 完成并开始守护。</summary>
+/// <summary>首次打开时的引导式设置：欢迎 → 设家长密码 → 选书桌和时长 → 完成并开始守护。
+/// 传入 existing 时为「重新配置」模式：预填当前值、跳过欢迎和密码两步、
+/// 只更新书桌与周内基础时长——密码、找回码、周末时长和按星期设置都不动。</summary>
 public partial class OnboardingWindow : Window
 {
     private readonly ISessionControl _host;
+    private readonly bool _reconfigure;
+    private readonly FamilySettings? _existing;
     private bool _ready;
     private int _step = 1;
     private string _pin = string.Empty;
@@ -19,14 +23,44 @@ public partial class OnboardingWindow : Window
     private int _minutes = 60;
     private string? _recovery;
 
-    public OnboardingWindow(ISessionControl host)
+    public OnboardingWindow(ISessionControl host) : this(host, null)
+    {
+    }
+
+    public OnboardingWindow(ISessionControl host, FamilySettings? existing)
     {
         _host = host;
+        _existing = existing;
+        _reconfigure = existing is not null;
         InitializeComponent();
         AppIcon.Apply(this);
         LoadDesks();
+        if (_reconfigure && existing is { } family)
+        {
+            PrefillFrom(family);
+            ReconfigNote.Visibility = Visibility.Visible;
+            RecoveryPanel.Visibility = Visibility.Collapsed;
+            ReconfigPinNote.Visibility = Visibility.Visible;
+        }
+
+        _step = _reconfigure ? 3 : 1;
         ApplyStep();
         _ready = true;
+    }
+
+    private void PrefillFrom(FamilySettings family)
+    {
+        foreach (Desk desk in OnboardDeskList.Items)
+        {
+            if (string.Equals(desk.Id, family.DeskId, StringComparison.OrdinalIgnoreCase))
+            {
+                OnboardDeskList.SelectedItem = desk;
+                _deskId = desk.Id;
+                break;
+            }
+        }
+
+        SetOnboardDuration(Math.Clamp(family.WeekdayMinutes ?? family.DailyMinutes, 5, 600));
     }
 
     private void LoadDesks()
@@ -44,19 +78,27 @@ public partial class OnboardingWindow : Window
 
     private void ApplyStep()
     {
-        Step1.Visibility = _step == 1 ? Visibility.Visible : Visibility.Collapsed;
-        Step2.Visibility = _step == 2 ? Visibility.Visible : Visibility.Collapsed;
+        Step1.Visibility = !_reconfigure && _step == 1 ? Visibility.Visible : Visibility.Collapsed;
+        Step2.Visibility = !_reconfigure && _step == 2 ? Visibility.Visible : Visibility.Collapsed;
         Step3.Visibility = _step == 3 ? Visibility.Visible : Visibility.Collapsed;
         Step4.Visibility = _step == 4 ? Visibility.Visible : Visibility.Collapsed;
 
-        StepIndicator.Text = $"第 {_step} / 4 步";
-        BackButton.Visibility = _step > 1 ? Visibility.Visible : Visibility.Collapsed;
+        // 重新配置只有「选书桌和时长 → 完成」两步，左侧步骤点也只剩这两个。
+        StepIndicator.Text = _reconfigure ? $"第 {_step - 2} / 2 步" : $"第 {_step} / 4 步";
+        var firstStep = _reconfigure ? 3 : 1;
+        BackButton.Visibility = _step > firstStep ? Visibility.Visible : Visibility.Collapsed;
         NextButton.Visibility = _step < 4 ? Visibility.Visible : Visibility.Collapsed;
         FinishButton.Visibility = _step == 4 ? Visibility.Visible : Visibility.Collapsed;
         SkipButton.Visibility = _step == 4 ? Visibility.Visible : Visibility.Collapsed;
 
-        SetDot(StepDot1, 1);
-        SetDot(StepDot2, 2);
+        StepDot1.Visibility = _reconfigure ? Visibility.Collapsed : Visibility.Visible;
+        StepDot2.Visibility = _reconfigure ? Visibility.Collapsed : Visibility.Visible;
+        if (!_reconfigure)
+        {
+            SetDot(StepDot1, 1);
+            SetDot(StepDot2, 2);
+        }
+
         SetDot(StepDot3, 3);
         SetDot(StepDot4, 4);
     }
@@ -246,6 +288,7 @@ public partial class OnboardingWindow : Window
     {
         var desk = OnboardDeskList.SelectedItem as Desk;
         SummaryDesk.Text = desk?.Name ?? "—";
+        SummaryMinutesLabel.Text = _reconfigure ? "周内每天时长" : "每天时长";
         SummaryMinutes.Text = _minutes switch
         {
             30 => "30 分钟",
@@ -254,8 +297,18 @@ public partial class OnboardingWindow : Window
             120 => "2 小时",
             _ => $"{_minutes} 分钟",
         };
-        _recovery = FamilySettings.NewRecoveryCode();
-        RecoveryCodeText.Text = _recovery ?? "————";
+        if (_reconfigure)
+        {
+            // 重新配置不重发找回码：旧的那枚继续有效。
+            _recovery = null;
+            RecoveryCodeText.Text = "————";
+        }
+        else
+        {
+            _recovery = FamilySettings.NewRecoveryCode();
+            RecoveryCodeText.Text = _recovery ?? "————";
+        }
+
         FinishError.Text = string.Empty;
     }
 
@@ -284,13 +337,27 @@ public partial class OnboardingWindow : Window
     {
         try
         {
-            var family = _host.SaveFamily(FamilySettings.Create(
-                _pin,
-                _minutes,
-                _deskId,
-                recoveryCode: _recovery));
-            _recovery = family.RecoveryCode;
-            RecoveryCodeText.Text = _recovery ?? RecoveryCodeText.Text;
+            if (_reconfigure && _existing is { } current)
+            {
+                // 重新配置只写书桌和周内基础时长；这里拿到的是脱敏副本，
+                // 服务端回存时会用已存的密钥补齐密码哈希与找回码，不会丢。
+                _host.SaveFamily(current with
+                {
+                    DeskId = _deskId,
+                    DailyMinutes = _minutes,
+                    WeekdayMinutes = _minutes,
+                });
+            }
+            else
+            {
+                var family = _host.SaveFamily(FamilySettings.Create(
+                    _pin,
+                    _minutes,
+                    _deskId,
+                    recoveryCode: _recovery));
+                _recovery = family.RecoveryCode;
+                RecoveryCodeText.Text = _recovery ?? RecoveryCodeText.Text;
+            }
 
             if (guard && _host.Family is { } saved && saved.DeskId == _deskId)
             {

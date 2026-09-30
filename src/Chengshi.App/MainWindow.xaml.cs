@@ -113,6 +113,7 @@ public partial class MainWindow : Window
         _lastBreakTick = DateTime.Now;
         Closing += OnClosing;
         StateChanged += OnStateChanged;
+        RestoreWindowBounds();
         Closed += (_, _) =>
         {
             _timer.Stop();
@@ -242,6 +243,13 @@ public partial class MainWindow : Window
 
     private void PushHint(string slot, string text) => Push("hint", new { slot, text });
 
+    /// <summary>
+    /// 全局轻提示：操作成功的短确认（tone=ok）或需要马上注意的短提醒（tone=warn）。
+    /// 页面底部的 hint 槽位仍然保留——那里放持久状态（断线、保存失败原因），
+    /// toast 只负责「刚才那一下操作的结果」。
+    /// </summary>
+    private void PushToast(string text, string tone = "ok") => Push("toast", new { text, tone });
+
     private void PushAll()
     {
         var snapshot = _host.Snapshot;
@@ -366,11 +374,11 @@ public partial class MainWindow : Window
                 UninstallService();
                 break;
             case "statsShow":
-                PushStats();
+                _ = PushStatsAsync();
                 break;
             case "statsRange":
                 _statsRangeDays = ArgInt(args, "days") switch { 14 => 14, 30 => 30, _ => 7 };
-                PushStats();
+                _ = PushStatsAsync();
                 break;
             case "spike":
                 Spike();
@@ -387,11 +395,17 @@ public partial class MainWindow : Window
             case "sponsor":
                 new SponsorWindow { Owner = this }.ShowDialog();
                 break;
+            case "rerunSetup":
+                RerunSetup();
+                break;
             case "askParent":
                 AskParent();
                 break;
             case "askMore":
                 AskMore();
+                break;
+            case "launchApp":
+                LaunchApp(ArgStr(args, "key"));
                 break;
             case "breakDismiss":
                 DismissBreak();
@@ -468,16 +482,96 @@ public partial class MainWindow : Window
     {
         if (_exitAllowed)
         {
+            SaveWindowBounds();
             return;
         }
 
         if (Tray is null)
         {
+            SaveWindowBounds();
             return;
         }
 
         e.Cancel = true;
         HideToTray();
+    }
+
+    // ===== 窗口几何持久化：记住上次的位置和大小，每次启动不再固定居中 =====
+    private static string WindowStatePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Chengshi", "window.json");
+
+    private void RestoreWindowBounds()
+    {
+        try
+        {
+            if (!File.Exists(WindowStatePath))
+            {
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(WindowStatePath));
+            var r = doc.RootElement;
+            if (!r.TryGetProperty("left", out var l)
+                || !r.TryGetProperty("top", out var t)
+                || !r.TryGetProperty("width", out var w)
+                || !r.TryGetProperty("height", out var h))
+            {
+                return;
+            }
+
+            double left = l.GetDouble(), top = t.GetDouble(), width = w.GetDouble(), height = h.GetDouble();
+            if (width < MinWidth || height < MinHeight)
+            {
+                return;
+            }
+
+            // 记下的位置还得落在当前连着的显示器范围内：拔掉外接屏后窗口不能跑出屏幕外。
+            var vx = System.Windows.SystemParameters.VirtualScreenLeft;
+            var vy = System.Windows.SystemParameters.VirtualScreenTop;
+            var vw = System.Windows.SystemParameters.VirtualScreenWidth;
+            var vh = System.Windows.SystemParameters.VirtualScreenHeight;
+            if (left < vx - 8 || top < vy - 8 || left + width > vx + vw + 8 || top + height > vy + vh + 8)
+            {
+                return;
+            }
+
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = left;
+            Top = top;
+            Width = width;
+            Height = height;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write("app", $"窗口位置记录读取失败（忽略，用默认位置）：{ex.Message}");
+        }
+    }
+
+    private void SaveWindowBounds()
+    {
+        try
+        {
+            // 最大化时 RestoreBounds 才有值；正常态直接取当前几何。
+            var rect = WindowState == WindowState.Maximized ? RestoreBounds : new Rect(Left, Top, Width, Height);
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(WindowStatePath)!);
+            File.WriteAllText(WindowStatePath, JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["left"] = rect.Left,
+                ["top"] = rect.Top,
+                ["width"] = rect.Width,
+                ["height"] = rect.Height,
+            }, JsonOpts));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write("app", $"窗口位置记录保存失败（忽略）：{ex.Message}");
+        }
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -495,6 +589,9 @@ public partial class MainWindow : Window
             var child = _host.Snapshot.Phase is SessionPhase.InDesk or SessionPhase.TimeUp;
             if (connected)
             {
+                // 服务端的授权按连接算：重连后是条新管道，之前的解锁不再有效。
+                // 不清掉的话，家长改设置会直接吃「设置没有保存」而不是重新弹密码框。
+                _parentUnlocked = false;
                 _parentHint = EngineHint(null);
                 _dashHint = EngineHint(null);
             }
@@ -641,6 +738,11 @@ public partial class MainWindow : Window
         PushFormDuration();
         PushFormLimits();
         PersistFamilyIfConfigured();
+        var name = _host.FindDesk(id)?.Name;
+        if (!string.IsNullOrEmpty(name))
+        {
+            PushToast($"已切换到「{name}」书桌。");
+        }
     }
 
     private void ApplyPreset(string deskId, int minutes)
@@ -658,6 +760,7 @@ public partial class MainWindow : Window
         PushFormDuration();
         PushFormLimits();
         PersistFamilyIfConfigured();
+        PushToast($"已套用：{desk.Name} · 每天 {DescribeMinutes(minutes)}。");
     }
 
     private bool WeekendTabActive => _weekendTabActive;
@@ -740,6 +843,7 @@ public partial class MainWindow : Window
         {
             _parentHint = "周计划没有保存：" + ex.Message;
             PushHint("parent", _parentHint);
+            PushToast("周计划没有保存：" + ex.Message, "warn");
         }
     }
 
@@ -772,6 +876,7 @@ public partial class MainWindow : Window
         {
             _parentHint = "密码不对，设置没有解锁。";
             PushHint("parent", _parentHint);
+            PushToast("密码不对，设置没有解锁。", "warn");
         }
 
         return _parentUnlocked;
@@ -815,6 +920,7 @@ public partial class MainWindow : Window
         {
             _parentHint = "设置没有保存：" + ex.Message;
             PushHint("parent", _parentHint);
+            PushToast("设置没有保存：" + ex.Message, "warn");
             LoadDurationFromFamily();
             return;
         }
@@ -962,7 +1068,10 @@ public partial class MainWindow : Window
 
     private void AskParent()
     {
-        if (!TryParentPin("输入家长密码后可以改每天时长、允许的软件，或暂时停下守护。", out var pin))
+        // 文案要说清后果：输完密码会先停下守护、回到家长界面，再改设置。
+        if (!TryParentPin(
+                "输入家长密码后会先暂停守护，回到家长界面；在那里可以改时长、软件名单，或重新开始守护。",
+                out var pin))
         {
             return;
         }
@@ -1003,6 +1112,56 @@ public partial class MainWindow : Window
             ? "（单独限时的软件不随加时恢复，明天自动恢复。）"
             : string.Empty;
 
+    /// <summary>
+    /// 孩子点磁贴启动软件：名单里的软件守护本来就放行，由界面进程替孩子拉起来，
+    /// 书桌就成了孩子真正的启动器。用完单独限额的不再放行；找不到安装位置就
+    /// 提示从开始菜单打开。
+    /// </summary>
+    private void LaunchApp(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        var snapshot = _host.Snapshot;
+        if (snapshot.Phase is not SessionPhase.InDesk)
+        {
+            return;
+        }
+
+        var desk = snapshot.DeskId is null ? null : _host.FindDesk(snapshot.DeskId);
+        var app = desk is { Unrestricted: false }
+            ? desk.Apps.FirstOrDefault(a => string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase))
+            : null;
+        if (app is null)
+        {
+            return;
+        }
+
+        var row = _host.AppUsage.FirstOrDefault(r =>
+            string.Equals(r.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (row?.Exhausted == true)
+        {
+            PushToast($"「{row.DisplayName}」今天的时间用完了，明天再来。", "warn");
+            return;
+        }
+
+        try
+        {
+            using var _ = Process.Start(new ProcessStartInfo(app.ImagePath ?? app.FileName)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(app.ImagePath ?? string.Empty) ?? string.Empty,
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write("app", $"磁贴启动失败（{key}）：{ex.Message}");
+            PushToast($"没能打开「{app.DisplayName}」，请从开始菜单或桌面打开。", "warn");
+        }
+    }
+
     private bool TryParentPin(string prompt, out string pin)
     {
         pin = string.Empty;
@@ -1021,6 +1180,43 @@ public partial class MainWindow : Window
         return true;
     }
 
+    /// <summary>
+    /// 帮助页入口：以「重新配置」模式再走一遍引导——预填当前书桌和周内时长、
+    /// 跳过密码步、不重发找回码。先验证家长密码，远程模式下顺带解锁本连接。
+    /// </summary>
+    private void RerunSetup()
+    {
+        if (!_host.IsConfigured || _host.Family is not { } family)
+        {
+            PushToast("先完成首次家长设置，才能重新运行引导。", "warn");
+            return;
+        }
+
+        if (!TryParentPin("输入家长密码后，像第一次那样重选书桌和时长。密码、找回码和周末设置不会被改动。", out var pin))
+        {
+            return;
+        }
+
+        if (_host.IsRemote)
+        {
+            try
+            {
+                _parentUnlocked = _host.VerifyParentPin(pin);
+            }
+            catch (RemoteFaultException)
+            {
+                _parentUnlocked = false;
+            }
+        }
+
+        var wizard = new OnboardingWindow(_host, family) { Owner = this };
+        if (wizard.ShowDialog() == true)
+        {
+            ReloadAll();
+            PushToast("设置已按引导更新。");
+        }
+    }
+
     // ============================================================
     // 允许软件 / 网站规则 / 单软件限时
     // ============================================================
@@ -1034,7 +1230,7 @@ public partial class MainWindow : Window
         var picker = new AppsWindow(desk.Apps) { Owner = this };
         if (picker.ShowDialog() == true && picker.Result is not null)
         {
-            SaveDesk(desk.WithApps(picker.Result));
+            SaveDesk(desk.WithApps(picker.Result), $"允许的软件已更新（共 {picker.Result.Count} 款）。");
         }
     }
 
@@ -1045,7 +1241,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        SaveDesk(desk.WithApps(desk.Apps.Where(a => a.Key != key)));
+        var name = desk.Apps.FirstOrDefault(a => a.Key == key)?.DisplayName;
+        SaveDesk(desk.WithApps(desk.Apps.Where(a => a.Key != key)),
+            name is null ? null : $"已从名单移除「{name}」。");
     }
 
     private void AddAllowedSite(string text)
@@ -1058,14 +1256,12 @@ public partial class MainWindow : Window
         var normalized = Desk.NormalizeDomains([text]);
         if (normalized.Count == 0)
         {
-            _parentHint = "网址格式不对，例如 ke.qq.com。";
-            PushHint("parent", _parentHint);
+            PushToast("网址格式不对，例如 ke.qq.com。", "warn");
             return;
         }
 
-        _parentHint = string.Empty;
-        PushHint("parent", string.Empty);
-        SaveDesk(desk.WithAllowedSites(desk.AllowedSiteList.Append(normalized[0])));
+        SaveDesk(desk.WithAllowedSites(desk.AllowedSiteList.Append(normalized[0])),
+            $"已允许 {normalized[0]}，浏览器只能打开名单里的网站。");
     }
 
     private void RemoveAllowedSite(string site)
@@ -1076,7 +1272,8 @@ public partial class MainWindow : Window
         }
 
         SaveDesk(desk.WithAllowedSites(desk.AllowedSiteList
-            .Where(s => !string.Equals(s, site, StringComparison.OrdinalIgnoreCase))));
+                .Where(s => !string.Equals(s, site, StringComparison.OrdinalIgnoreCase))),
+            $"已从允许名单拿掉 {site}。");
     }
 
     private void AddBlockedSite(string text)
@@ -1089,14 +1286,12 @@ public partial class MainWindow : Window
         var normalized = Desk.NormalizeDomains([text]);
         if (normalized.Count == 0)
         {
-            _parentHint = "网址格式不对，例如 youku.com。";
-            PushHint("parent", _parentHint);
+            PushToast("网址格式不对，例如 youku.com。", "warn");
             return;
         }
 
-        _parentHint = string.Empty;
-        PushHint("parent", string.Empty);
-        SaveDesk(desk.WithBlockedSites(desk.BlockedSiteList.Append(normalized[0])));
+        SaveDesk(desk.WithBlockedSites(desk.BlockedSiteList.Append(normalized[0])),
+            $"已禁止 {normalized[0]}。");
     }
 
     private void RemoveBlockedSite(string site)
@@ -1107,7 +1302,8 @@ public partial class MainWindow : Window
         }
 
         SaveDesk(desk.WithBlockedSites(desk.BlockedSiteList
-            .Where(s => !string.Equals(s, site, StringComparison.OrdinalIgnoreCase))));
+                .Where(s => !string.Equals(s, site, StringComparison.OrdinalIgnoreCase))),
+            $"已解除禁止 {site}。");
     }
 
     private void SetCategories(bool video, bool games, bool adult)
@@ -1133,7 +1329,7 @@ public partial class MainWindow : Window
             categories.Add("adult");
         }
 
-        SaveDesk(desk.WithBlockCategories(categories));
+        SaveDesk(desk.WithBlockCategories(categories), "网站拦截类别已更新。");
     }
 
     /// <summary>
@@ -1169,15 +1365,13 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrEmpty(key))
         {
-            _parentHint = "先从下拉框里挑一款软件。";
-            PushHint("parent", _parentHint);
+            PushToast("先从下拉框里挑一款软件。", "warn");
             return;
         }
 
         if (minutes is < 5 or > 600)
         {
-            _parentHint = "分钟数要填数字，范围 5–600。";
-            PushHint("parent", _parentHint);
+            PushToast("分钟数要填数字，范围 5–600。", "warn");
             return;
         }
 
@@ -1194,21 +1388,19 @@ public partial class MainWindow : Window
         }
         else
         {
-            _parentHint = "先从下拉框里挑一款软件。";
-            PushHint("parent", _parentHint);
+            PushToast("先从下拉框里挑一款软件。", "warn");
             return;
         }
 
         if (ReferenceEquals(limited, desk))
         {
-            _parentHint = "这条限额已经是这样了。";
-            PushHint("parent", _parentHint);
+            PushToast("这条限额已经是这样了。", "warn");
             return;
         }
 
-        _parentHint = string.Empty;
-        PushHint("parent", string.Empty);
-        SaveDesk(limited);
+        var name = limited.Apps.FirstOrDefault(a => string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName ?? key;
+        SaveDesk(limited, $"已给「{name}」设每天 {minutes} 分钟。");
     }
 
     private void RemoveAppLimit(string key)
@@ -1218,10 +1410,13 @@ public partial class MainWindow : Window
             return;
         }
 
-        SaveDesk(desk.WithAppLimit(key, null));
+        var name = desk.Apps.FirstOrDefault(a => string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName;
+        SaveDesk(desk.WithAppLimit(key, null),
+            name is null ? null : $"已取消「{name}」的单独限时。");
     }
 
-    private void SaveDesk(Desk desk)
+    private void SaveDesk(Desk desk, string? doneToast = null)
     {
         if (!EnsureParentUnlocked())
         {
@@ -1232,11 +1427,16 @@ public partial class MainWindow : Window
         {
             var saved = _host.SaveDesk(desk);
             _selectedDeskId = saved.Id;
+            if (!string.IsNullOrEmpty(doneToast))
+            {
+                PushToast(doneToast);
+            }
         }
         catch (Exception ex) when (ex is RemoteFaultException or UnauthorizedAccessException or IOException)
         {
             _parentHint = "书桌没有保存：" + ex.Message;
             PushHint("parent", _parentHint);
+            PushToast("书桌没有保存：" + ex.Message, "warn");
         }
 
         PushFormDesk();
@@ -1264,6 +1464,7 @@ public partial class MainWindow : Window
             Push("pinCleared");
             PushFormPin();
             PushHint("pin", saved.RecoveryCode is null ? "密码已改。找回码不变（沿用首次设置时抄下的那枚）。" : "密码已改。");
+            PushToast("密码已改。");
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or RemoteFaultException)
         {
@@ -1314,9 +1515,11 @@ public partial class MainWindow : Window
 
         PersistFamilyIfConfigured();
         PushFormPin();
-        PushHint("mail", string.IsNullOrWhiteSpace(email)
+        var saved = string.IsNullOrWhiteSpace(email)
             ? "已清除备用邮箱。"
-            : $"已保存备用邮箱：{email}（忘记密码时可用它收验证码）。");
+            : $"已保存备用邮箱：{email}（忘记密码时可用它收验证码）。";
+        PushHint("mail", saved);
+        PushToast(saved);
     }
 
     private void MailPreset(string tag)
@@ -1356,6 +1559,7 @@ public partial class MainWindow : Window
             // 授权码只发往守护服务（加密落盘），界面不保存、不再读取。
             await _host.SaveSmtpAsync(new SmtpConfig(host, portNum, ssl, user, pass));
             PushHint("mail", "已保存邮件设置（授权码加密存放）。之后找回密码会真实发信到备用邮箱。");
+            PushToast("已保存邮件设置。");
         }
         catch (Exception ex) when (ex is RemoteFaultException or InvalidOperationException)
         {
@@ -1549,7 +1753,8 @@ public partial class MainWindow : Window
             var label = limitedOut is not null
                 ? $"{limitedOut.DisplayName} · 今天限时用完"
                 : Path.GetFileNameWithoutExtension(blocked.FileName);
-            _blocked.Insert(0, label);
+            // 带上时间：家长看到「拦了什么」也知道「什么时候拦的」。
+            _blocked.Insert(0, $"{label} · {DateTime.Now:HH:mm}");
             if (_blocked.Count > 8)
             {
                 _blocked.RemoveAt(_blocked.Count - 1);
@@ -1577,6 +1782,7 @@ public partial class MainWindow : Window
         string? warningText = null;
         string? appNoticeText = null;
         string? appNoticeTone = null;
+        string? remainingUntil = null;
         if (timeUp)
         {
             caption = "今天的屏幕时间用完了";
@@ -1594,7 +1800,7 @@ public partial class MainWindow : Window
             tiles = BuiltinDesks.Spike().Apps
                 .Select(a => a.DisplayName)
                 .Distinct(StringComparer.CurrentCultureIgnoreCase)
-                .Select(name => (object)new { name, locked = false, note = (string?)null })
+                .Select(name => (object)new { name, key = (string?)null, launchable = false, locked = false, note = (string?)null })
                 .ToList();
         }
         else if (child)
@@ -1624,6 +1830,12 @@ public partial class MainWindow : Window
                 : [];
             (appNoticeText, appNoticeTone) = AppNoticeFor(usage);
             childHint = string.IsNullOrWhiteSpace(_childHintOverride) ? ChildHintFor(snapshot) : _childHintOverride;
+            // 「还剩 42 分钟」不如「预计 17:42 用完」直观；锁屏/睡眠期间不计时，
+            // 所以只说「预计」。时间用完/宽限阶段不展示（数字已无意义）。
+            if (snapshot.Remaining > TimeSpan.Zero)
+            {
+                remainingUntil = $"预计 {DateTime.Now.Add(snapshot.Remaining):HH:mm} 用完";
+            }
         }
         else
         {
@@ -1656,6 +1868,7 @@ public partial class MainWindow : Window
             closeHidden = snapshot.Parental && child,
             caption,
             remainingText = child ? FormatRemaining(snapshot.Remaining) : string.Empty,
+            remainingUntil,
             childHint,
             graceText,
             warningText,
@@ -1682,6 +1895,10 @@ public partial class MainWindow : Window
         return new
         {
             name = app.DisplayName,
+            key = app.Key,
+            // 有完整路径直接启动；只有文件名的也交给 Shell 的 App Paths 解析，
+            // 失败会有 toast 兜底提示。
+            launchable = true,
             locked,
             note = row is { HasLimit: true }
                 ? locked ? "今天用完" : $"还剩 {row.RemainingMinutes} 分钟"
@@ -1750,16 +1967,16 @@ public partial class MainWindow : Window
                 hint = snapshot.IsGuarding
                     ? "正在守护。时间用完会自动锁到系统桌面。"
                     : _host.IsConfigured
-                        ? "现在没有守护。点右上角「开始守护」。"
+                        ? "现在没有守护。点「开始守护」后开始计时。"
                         : "先完成家长设置，今天的时间额度才会生效。",
                 weekdayText = $"周内每天 {DescribeMinutes(family?.WeekdayMinutes ?? family?.DailyMinutes ?? 60)}",
                 weekendText = $"周末每天 {DescribeMinutes(family?.WeekendMinutes ?? family?.DailyMinutes ?? 120)}",
             },
-            deskCards = new[]
+            deskCards = new object[]
             {
-                new { id = "homework", name = "写作业", summary = DeskCardSummary(BuiltinDesks.HomeworkId, "文档 + 词典 + 计算器") },
-                new { id = "class", name = "网课", summary = DeskCardSummary(BuiltinDesks.ClassId, "浏览器 + 笔记") },
-                new { id = "code", name = "编程", summary = DeskCardSummary(BuiltinDesks.CodeId, "IDE + 终端") },
+                new { id = "homework", name = "写作业", summary = DeskCardSummary(BuiltinDesks.HomeworkId, "文档 + 词典 + 计算器"), selected = desk?.Id == BuiltinDesks.HomeworkId },
+                new { id = "class", name = "网课", summary = DeskCardSummary(BuiltinDesks.ClassId, "浏览器 + 笔记"), selected = desk?.Id == BuiltinDesks.ClassId },
+                new { id = "code", name = "编程", summary = DeskCardSummary(BuiltinDesks.CodeId, "IDE + 终端"), selected = desk?.Id == BuiltinDesks.CodeId },
             },
             week = new { empty = _weekEmptyCache, rows = _weekRowsCache ?? [] },
             appUsage = AppUsagePayload(desk),
@@ -1844,10 +2061,26 @@ public partial class MainWindow : Window
     // ============================================================
     // 统计页（按应用的用量详情）
     // ============================================================
-    private void PushStats()
+
+    /// <summary>读日志可能碰到几十 KB 的 jsonl：放到后台线程读，读完回 UI 线程推送。</summary>
+    private async Task PushStatsAsync()
     {
         var range = _statsRangeDays;
-        var history = _usageLog.ReadRecent(range); // 最新在前
+        var history = await Task.Run(() => _usageLog.ReadRecent(range));
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (!IsLoaded)
+            {
+                return;
+            }
+
+            PushStats(history);
+        });
+    }
+
+    private void PushStats(IReadOnlyList<UsageDay> history)
+    {
+        var range = _statsRangeDays;
         var todayDate = DateOnly.FromDateTime(DateTime.Now);
 
         // 应用键 → 展示名：以当前所有书桌为准，历史应用回落到文件名。
@@ -2171,7 +2404,6 @@ public partial class MainWindow : Window
                     : "用完后，名单外的软件会被关掉，直到明天或输入家长密码。",
         });
         PushPreview();
-        PushPreview();
     }
 
     private void PushFormSchedule()
@@ -2367,18 +2599,14 @@ public partial class MainWindow : Window
             return "先完成家长设置，今天的时间额度才会生效。";
         }
 
+        // 数字（还剩多少、已用多少）只在「电脑总时长」卡里讲一遍，
+        // 这里只说当前状态，避免同一句话在页面上出现两次。
         if (snapshot.IsGuarding)
         {
-            var remaining = limit - used;
-            if (remaining < TimeSpan.Zero)
-            {
-                remaining = TimeSpan.Zero;
-            }
-
-            return $"守护进行中 · 孩子今天已用 {FormatMinutes(used)}，还剩 {FormatRemaining(remaining)}。";
+            return "守护进行中 · 时间用完会自动锁屏，明天恢复。";
         }
 
-        return $"今天共 {FormatMinutes(limit)}，现在没在守护。点右侧按钮就能开始。";
+        return "现在没有守护。点「开始守护」后，今天的时间开始计。";
     }
 
     private static string FormatMinutes(TimeSpan span)

@@ -58,6 +58,7 @@ const HANDLERS = {
   overlay: (p) => {
     if (p.name === "break") $("#breakOverlay").classList.toggle("hidden", !p.visible);
   },
+  toast: (p) => showToast(p.text, p.tone),
   pinCleared: () => {
     $("#pinOld").value = "";
     $("#pinNew").value = "";
@@ -98,6 +99,7 @@ function renderState(s) {
   if (s.view === "desk") {
     setText($("#childCaption"), s.caption);
     setText($("#remaining"), s.remainingText);
+    setText($("#remainingUntil"), s.remainingUntil || "");
     setText($("#childHint"), s.childHint);
     // 桌面顶部横幅：宽限（琥珀，倒计时归零后的保存窗口）优先于分级提醒（10/5/1 分钟）。
     const banner = $("#deskBanner");
@@ -139,13 +141,38 @@ function renderTiles(tiles) {
     for (const ch of String(name)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
     return palette[h % palette.length];
   };
-  setHtml($("#childTiles"), (tiles || []).map((t) => `
-    <div class="app-tile ${t.locked ? "tile-locked" : ""}" title="${esc(t.note || t.name)}">
+  // 磁贴是孩子的启动器：可点的点一下就开；用完的置灰且不可点。
+  setHtml($("#childTiles"), (tiles || []).map((t) => {
+    const launchable = !!t.launchable && !!t.key && !t.locked;
+    const tip = t.note || (launchable ? `点击打开「${t.name}」` : t.name);
+    return `
+    <button type="button" class="app-tile ${t.locked ? "tile-locked" : ""} ${launchable ? "launchable" : ""}"
+            ${launchable ? `data-launch="${esc(t.key)}"` : ""} ${t.locked ? 'aria-disabled="true"' : ""}
+            title="${esc(tip)}">
       <div class="app-tile-avatar" style="background:${hue(t.name)}">${esc(t.name.charAt(0).toUpperCase())}</div>
       ${t.locked ? '<span class="tile-badge">今天用完</span>' : ""}
       <div class="app-tile-name">${esc(t.name)}</div>
       ${t.note && !t.locked ? `<div class="tile-note">${esc(t.note)}</div>` : ""}
-    </div>`).join(""));
+    </button>`;
+  }).join(""));
+}
+
+/* ============================================================
+   全局轻提示（toast）：宿主推 {text, tone}；成功绿色、提醒橙色。
+   ============================================================ */
+function showToast(text, tone = "ok") {
+  const host = $("#toastHost");
+  if (!host || !text) return;
+  while (host.children.length >= 3) host.firstElementChild.remove();
+  const el = document.createElement("div");
+  el.className = "toast" + (tone === "warn" ? " warn" : "");
+  el.innerHTML = `<svg class="ic"><use href="#${tone === "warn" ? "i-alert" : "i-check"}"/></svg><span>${esc(text)}</span>`;
+  host.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("leaving");
+    el.addEventListener("animationend", () => el.remove(), { once: true });
+    setTimeout(() => el.remove(), 500); // 动画被中断时的兜底
+  }, 3200);
 }
 
 /* ============================================================
@@ -158,10 +185,13 @@ function renderDashboard(d) {
   setText($("#greeting"), d.greeting);
   setText($("#heroLine"), d.heroLine);
 
+  // 书桌卡即点即切换（宿主 SelectDesk 会确认保存并弹 toast）；调整软件名单去设置页。
   setHtml($("#deskCards"), (d.deskCards || []).map((c) => `
-    <button class="desk-card nav-go" data-page="settings">
+    <button class="desk-card ${c.selected ? "on" : ""}" data-desk="${esc(c.id)}"
+            title="${c.selected ? "当前书桌 · 点其它的卡片可切换" : "点一下切换到这张书桌"}">
       <div class="desk-card-row">
         <div class="desk-card-icon"><svg class="ic"><use href="#${DESK_ICONS[c.id] || "i-grid"}"/></svg></div>
+        <span class="desk-card-check" style="${c.selected ? "" : "display:none"}"><svg class="ic"><use href="#i-check"/></svg></span>
         <span class="desk-card-badge" style="${DESK_BADGES[c.id] ? "" : "display:none"}">${DESK_BADGES[c.id] || ""}</span>
       </div>
       <div class="desk-card-name" style="margin-top:12px">${esc(c.name)}</div>
@@ -437,14 +467,83 @@ document.addEventListener("click", (e) => {
 });
 
 /* ============================================================
+   设置页 · 页内锚点导航（设置项多，吸顶快速跳转 + 滚动高亮）
+   ============================================================ */
+$("#anchorNav").addEventListener("click", (e) => {
+  const link = e.target.closest("[data-anchor]");
+  if (!link) return;
+  document.getElementById(link.dataset.anchor)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+$("#page-settings").addEventListener("scroll", () => {
+  const links = $$(".anchor-link");
+  const mark = $("#page-settings").scrollTop + 80;
+  let active = links[0]?.dataset.anchor;
+  for (const link of links) {
+    const sec = document.getElementById(link.dataset.anchor);
+    if (sec && sec.offsetTop <= mark) active = link.dataset.anchor;
+  }
+  for (const link of links) link.classList.toggle("on", link.dataset.anchor === active);
+}, { passive: true });
+
+/* ============================================================
    事件绑定
    ============================================================ */
 $("#btnMin").addEventListener("click", () => send("min"));
 $("#btnClose").addEventListener("click", () => send("close"));
+$("#btnParent").addEventListener("click", () => send("askParent"));
 
 $("#guardBtn").addEventListener("click", () => send("dashboardGuard"));
-$("#guardBtn2").addEventListener("click", () => send("startGuard", readFirstRunPin()));
+$("#guardBtn2").addEventListener("click", () => {
+  // 首次设密码：先在前端把关（长度、一致性），错了就近显示，不劳后端跑一圈。
+  if (!$("#pinFirstRun").classList.contains("hidden")) {
+    const pinErr = $("#pinError");
+    const fail = (msg, focus) => {
+      pinErr.textContent = msg;
+      pinErr.classList.remove("hidden");
+      $(focus).focus();
+    };
+    const pin = $("#pinCreate").value;
+    if (pin.length < 4) return fail("密码至少 4 位。", "#pinCreate");
+    if (pin !== $("#pinConfirm").value) return fail("两次输入的密码不一致。", "#pinConfirm");
+    pinErr.classList.add("hidden");
+  }
+  send("startGuard", readFirstRunPin());
+});
+for (const sel of ["#pinCreate", "#pinConfirm"]) {
+  $(sel).addEventListener("input", () => $("#pinError").classList.add("hidden"));
+}
 $("#rewardBtn").addEventListener("click", () => send("reward"));
+
+// 孩子磁贴：点一下打开对应软件（宿主负责真正的启动与兜底提示）
+document.addEventListener("click", (e) => {
+  const tile = e.target.closest("[data-launch]");
+  if (tile && !tile.classList.contains("tile-locked")) {
+    send("launchApp", { key: tile.dataset.launch });
+  }
+});
+
+// Esc 关掉护眼提醒（按「再看一会儿」处理）
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#breakOverlay").classList.contains("hidden")) {
+    send("breakDismiss", { mode: "more" });
+  }
+});
+
+// Enter 提交：密码 / 邮箱 / SMTP 表单与网站输入一致
+function bindEnter(sel, fn) {
+  $(sel).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); fn(); } });
+}
+bindEnter("#pinCreate", () => $("#guardBtn2").click());
+bindEnter("#pinConfirm", () => $("#guardBtn2").click());
+bindEnter("#pinOld", () => $("#changePin").click());
+bindEnter("#pinNew", () => $("#changePin").click());
+bindEnter("#pinNew2", () => $("#changePin").click());
+bindEnter("#recoveryEmail", () => $("#saveRecoveryEmail").click());
+bindEnter("#smtpHost", () => $("#saveMail").click());
+bindEnter("#smtpPort", () => $("#saveMail").click());
+bindEnter("#smtpUser", () => $("#saveMail").click());
+bindEnter("#smtpPass", () => $("#saveMail").click());
 
 $("#askParentBtn").addEventListener("click", () => send("askParent"));
 $("#askParentNight").addEventListener("click", () => send("askParent"));
@@ -517,15 +616,28 @@ $("#dayRows").addEventListener("focusout", (e) => {
 
 // 设置页 · 单软件限时
 $("#limitPickApp").addEventListener("click", () => send("pickLimitApp"));
+// 分钟数非法时就近报错，不再静默无反应
+function limitError(msg) {
+  const el = $("#limitError");
+  if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
 $("#addLimit").addEventListener("click", () => {
   const key = $("#limitAppSelect").value;
-  const n = Math.round(Number($("#limitMinutes").value));
-  if (!key) return;
-  if (Number.isFinite(n) && n >= 5 && n <= 600) {
-    $("#limitMinutes").value = "";
-    send("addAppLimit", { key, minutes: n });
+  const raw = $("#limitMinutes").value.trim();
+  const n = Math.round(Number(raw));
+  if (!key) { limitError("先挑一款要限时的软件。"); return; }
+  if (raw === "" || !Number.isFinite(n) || n < 5 || n > 600) {
+    limitError("分钟数要填 5–600 之间的数字。");
+    $("#limitMinutes").focus();
+    return;
   }
+  limitError("");
+  $("#limitMinutes").value = "";
+  send("addAppLimit", { key, minutes: n });
 });
+$("#limitMinutes").addEventListener("input", () => limitError(""));
 
 // 设置页 · 密码 / 找回 / 邮件 / 服务 / 开关
 $("#changePin").addEventListener("click", () => send("changePin", {
@@ -555,6 +667,7 @@ $("#copyFeedback").addEventListener("click", () => send("copyFeedback"));
 $("#openMailApp").addEventListener("click", () => send("openMailApp"));
 $("#openLogs").addEventListener("click", () => send("openLogs"));
 $("#sponsorBtn").addEventListener("click", () => send("sponsor"));
+$("#rerunSetupBtn").addEventListener("click", () => send("rerunSetup"));
 
 function readFirstRunPin() {
   return { pin: $("#pinCreate").value, confirm: $("#pinConfirm").value };
@@ -587,11 +700,23 @@ function demoSend(cmd, args) {
     const desk = { ...LAST["form.desk"], selected: args.id, unrestricted: args.id === "fullpc" };
     dispatch("form.desk", desk);
     dispatch("form.limits", { ...LAST["form.limits"], unrestricted: args.id === "fullpc" });
+    if (LAST["dashboard"]) {
+      dispatch("dashboard", {
+        ...LAST["dashboard"],
+        deskCards: (LAST["dashboard"].deskCards || []).map((c) => ({ ...c, selected: c.id === args.id })),
+      });
+    }
   } else if (cmd === "dayTab") {
     dispatch("form.duration", { ...LAST["form.duration"], tab: args.tab });
   } else if (cmd === "setPresetDuration" && args.minutes !== "custom") {
     const d = LAST["form.duration"];
     dispatch("form.duration", { ...d, preset: args.minutes, minutesText: `${args.minutes} 分钟` });
+  } else if (cmd === "launchApp") {
+    showToast("演示模式：这里会打开对应的软件。");
+  } else if (cmd === "askParent") {
+    showToast("演示模式：这里会弹家长密码框。");
+  } else if (cmd === "rerunSetup") {
+    showToast("演示模式：这里会先验证家长密码，再打开两步的重新设置引导。");
   } else if (cmd === "nav") {
     showPage(args.page);
   }
@@ -620,14 +745,14 @@ function showDemoView(v) {
   } else if (v === "desk") {
     dispatch("state", {
       ...base, view: "desk", closeHidden: false,
-      caption: "今天还剩", remainingText: "0:42:18",
+      caption: "今天还剩", remainingText: "0:42:18", remainingUntil: "预计 17:42 用完",
       childHint: "只能用 记事本、计算器、Word。其它软件会被关掉。",
       appNotice: { text: "「游戏」还剩 3 分钟，准备收尾吧。", tone: "soon" },
       tiles: [
-        { name: "记事本" },
-        { name: "计算器", note: "还剩 12 分钟" },
-        { name: "Word" }, { name: "词典" },
-        { name: "游戏", locked: true },
+        { name: "记事本", key: "notepad.exe", launchable: true },
+        { name: "计算器", key: "calc.exe", launchable: true, note: "还剩 12 分钟" },
+        { name: "Word", key: "WINWORD.EXE", launchable: true }, { name: "词典", key: "dict.exe", launchable: true },
+        { name: "游戏", key: "game.exe", launchable: true, locked: true },
       ],
       blocked: ["Google Chrome"], askParent: true, askMore: false,
     });
@@ -653,16 +778,16 @@ if (!hasHost) {
     engine: { ok: true, title: "守护服务已连接", detail: "以系统权限执行，孩子关不掉。" },
   });
   dispatch("dashboard", {
-    greeting: "下午好", heroLine: "守护进行中 · 孩子今天已用 1 小时 18 分，还剩 42 分钟。",
+    greeting: "下午好", heroLine: "守护进行中 · 时间用完会自动锁屏，明天恢复。",
     budget: {
       fraction: .66, remainingText: "42分", usedText: "已用 1 小时 18 分 / 共 2 小时",
       hint: "正在守护。时间用完会自动锁到系统桌面。",
       weekdayText: "周内每天 1 小时", weekendText: "周末每天 2 小时",
     },
     deskCards: [
-      { id: "homework", name: "写作业", summary: "文档 + 词典 + 计算器" },
-      { id: "class", name: "网课", summary: "浏览器 + 笔记" },
-      { id: "code", name: "编程", summary: "IDE + 终端" },
+      { id: "homework", name: "写作业", summary: "文档 + 词典 + 计算器", selected: true },
+      { id: "class", name: "网课", summary: "浏览器 + 笔记", selected: false },
+      { id: "code", name: "编程", summary: "IDE + 终端", selected: false },
     ],
     week: {
       empty: false,

@@ -59,6 +59,16 @@
                    Foreground="{StaticResource MutedBrush}"
                    FontSize="12"
                    Margin="0,0,0,10"/>
+        <ProgressBar x:Name="ScanProgress"
+                     DockPanel.Dock="Top"
+                     Height="3"
+                     Width="180"
+                     HorizontalAlignment="Left"
+                     Margin="0,0,0,12"
+                     Foreground="#2C4538"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     IsIndeterminate="True"/>
         <ListBox x:Name="AppList"
                  BorderThickness="0"
                  Background="Transparent"
@@ -102,11 +112,17 @@
                 Style="{StaticResource PrimaryButton}"
                 Click="Complete_Click"
                 MinWidth="88"/>
-        <Button Content="从文件添加"
-                Style="{StaticResource OutlineButton}"
-                HorizontalAlignment="Left"
-                Click="Browse_Click"
-                ToolTip="绿色便携版、绿色软件等不在开始菜单里的程序，直接选 exe。"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+          <Button Content="从文件添加"
+                  Style="{StaticResource OutlineButton}"
+                  Click="Browse_Click"
+                  ToolTip="绿色便携版、绿色软件等不在开始菜单里的程序，直接选 exe。"/>
+          <Button Content="重新扫描"
+                  Style="{StaticResource GhostButton}"
+                  Margin="10,0,0,0"
+                  Click="Rescan_Click"
+                  ToolTip="新装了软件、或列表里没找到想要的，重新扫一遍本机。"/>
+        </StackPanel>
       </DockPanel>
     </Grid>
   </Border>

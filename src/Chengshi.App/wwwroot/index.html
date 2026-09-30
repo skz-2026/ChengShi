@@ -103,6 +103,11 @@
         <circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>
       </g>
     </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3.8 21.4 20H2.6z"/><path d="M12 9.8v4.4"/><circle cx="12" cy="17" r=".4" fill="currentColor"/>
+      </g>
+    </symbol>
   </svg>
 
   <!-- ===== 标题栏（app-region: drag） ===== -->
@@ -115,6 +120,9 @@
       </span>
     </div>
     <div class="tb-right">
+      <button id="btnParent" class="tb-btn tb-parent" title="家长入口：输入密码暂停守护并回到设置" app-region="no-drag">
+        <svg class="ic"><use href="#i-shield"/></svg><span>家长入口</span>
+      </button>
       <button id="btnMin" class="tb-btn" title="最小化到托盘" app-region="no-drag"><svg class="ic"><use href="#i-minus"/></svg></button>
       <button id="btnClose" class="tb-btn tb-close" title="关闭" app-region="no-drag"><svg class="ic"><use href="#i-x"/></svg></button>
     </div>
@@ -234,6 +242,16 @@
             <button id="guardBtn2" class="btn btn-primary">开始守护</button>
           </div>
 
+          <!-- 页内锚点：设置项多，快速跳到要改的那一块 -->
+          <nav class="anchor-nav" id="anchorNav">
+            <button class="anchor-link on" data-anchor="sec-what">能用什么</button>
+            <button class="anchor-link" data-anchor="sec-duration">能用多久</button>
+            <button class="anchor-link" data-anchor="sec-limit">单软件限时</button>
+            <button class="anchor-link" data-anchor="sec-boot">开机守护</button>
+            <button class="anchor-link" data-anchor="sec-pin">密码与找回</button>
+            <button class="anchor-link" data-anchor="sec-rest">睡觉与护眼</button>
+          </nav>
+
           <!-- 守护生效预览：实时汇总所有规则叠加后的结果，回答「到底什么在生效」 -->
           <div class="card preview-card">
             <div class="preview-head" id="previewHead">点「开始守护」后，以下规则会同时生效：</div>
@@ -242,7 +260,7 @@
 
           <!-- 规则一 · 能用什么 ｜ 规则二 · 能用多久（两条规则同时生效） -->
           <div class="scenario-grid">
-            <div class="card">
+            <div class="card anchor-target" id="sec-what">
               <div class="scenario-head">
                 <span class="scenario-title">能用什么</span><span class="scenario-tag">软件与网站</span>
               </div>
@@ -266,7 +284,7 @@
               <div id="appsSection">
                 <div class="row split" style="margin-top:24px">
                   <div class="card-title">允许的软件</div>
-                  <button id="addAppsBtn" class="btn btn-outline btn-sm">添加 / 去掉</button>
+                  <button id="addAppsBtn" class="btn btn-outline btn-sm" title="打开本机软件列表勾选，也可以直接挑 exe 文件；取消勾选即移除">挑选软件…</button>
                 </div>
                 <div class="chips" id="appChips"></div>
                 <div class="empty-note" id="appChipsEmpty">还没选软件。开始守护前至少加一款。</div>
@@ -300,7 +318,7 @@
               </div>
             </div>
 
-            <div class="card">
+            <div class="card anchor-target" id="sec-duration">
               <div class="scenario-head">
                 <span class="scenario-title">能用多久</span><span class="scenario-tag">每天总时长</span>
               </div>
@@ -335,7 +353,7 @@
           </div>
 
           <!-- 规则三 · 单个软件限时 -->
-          <div class="card" style="margin-top:16px">
+          <div class="card anchor-target" id="sec-limit" style="margin-top:16px">
             <div class="scenario-head">
               <span class="scenario-title">单个软件限时</span><span class="scenario-tag">可选</span>
             </div>
@@ -346,12 +364,13 @@
               <input id="limitMinutes" class="input" style="width:72px" inputmode="numeric" placeholder="分钟" />
               <button id="addLimit" class="btn btn-outline">加上这条限额</button>
             </div>
-            <div id="limitRows" style="margin-top:10px"></div>
-            <div class="empty-note" id="limitEmpty">还没有单独限时。所有软件共用上面的每天总时长。</div>
+              <div id="limitRows" style="margin-top:10px"></div>
+              <div class="inline-error hidden" id="limitError"></div>
+              <div class="empty-note" id="limitEmpty">还没有单独限时。所有软件共用上面的每天总时长。</div>
           </div>
 
           <!-- 规则四 · 开机自动守护 -->
-          <div class="card" style="margin-top:16px">
+          <div class="card anchor-target" id="sec-boot" style="margin-top:16px">
             <div class="scenario-head">
               <span class="scenario-title">开机自动守护</span><span class="scenario-tag">什么时候开始</span>
             </div>
@@ -375,7 +394,7 @@
           </div>
 
           <!-- 支撑配置：密码与找回 ｜ 邮件 -->
-          <div class="scenario-grid" style="margin-top:16px">
+          <div class="scenario-grid anchor-target" id="sec-pin" style="margin-top:16px">
             <div class="card">
               <div class="scenario-title">家长密码与找回</div>
               <div class="scenario-lead">改规则、加时间、退出澄时都要用密码。</div>
@@ -385,6 +404,7 @@
                 <input type="password" id="pinCreate" class="input" style="width:100%" inputmode="numeric" autocomplete="new-password" />
                 <div class="field-label" style="margin-top:12px">再输一次</div>
                 <input type="password" id="pinConfirm" class="input" style="width:100%" inputmode="numeric" autocomplete="new-password" />
+                <div class="inline-error hidden" id="pinError"></div>
               </div>
 
               <div id="pinConfigured" class="hidden">
@@ -438,7 +458,7 @@
           </div>
 
           <!-- 支撑配置：睡觉与护眼 -->
-          <div class="card" style="margin-top:16px">
+          <div class="card anchor-target" id="sec-rest" style="margin-top:16px">
             <div class="scenario-title">睡觉与护眼</div>
             <label class="check" style="margin-top:10px"><input type="checkbox" id="bedtime"><span>22:00 – 07:00 断网</span></label>
             <div class="muted-note" style="margin-left:28px">守护期间到点就断网，帮助孩子按时睡觉。</div>
@@ -448,10 +468,10 @@
             <div class="card-title">护眼休息提醒</div>
             <div class="muted-note">孩子连续用电脑到设定时长，就弹窗温柔提醒休息眼睛。只是提醒，不会强制关掉软件。</div>
             <div class="row wrap" style="margin-top:10px">
-              <button class="pill-btn break-pill" data-break="0">关闭</button>
-              <button class="pill-btn break-pill" data-break="30">每 30 分钟</button>
-              <button class="pill-btn break-pill" data-break="45">每 45 分钟</button>
-              <button class="pill-btn break-pill" data-break="60">每 60 分钟</button>
+              <button class="pill-btn break-pill" data-break="0"><svg class="ic ic-sm"><use href="#i-eye"/></svg>关闭提醒</button>
+              <button class="pill-btn break-pill" data-break="30"><svg class="ic ic-sm"><use href="#i-eye"/></svg>每 30 分钟</button>
+              <button class="pill-btn break-pill" data-break="45"><svg class="ic ic-sm"><use href="#i-eye"/></svg>每 45 分钟</button>
+              <button class="pill-btn break-pill" data-break="60"><svg class="ic ic-sm"><use href="#i-eye"/></svg>每 60 分钟</button>
             </div>
           </div>
 
@@ -521,6 +541,11 @@
               <div class="hint accent-hint" id="spikeHint"></div>
             </div>
             <div class="card">
+              <div class="card-title">重新走一遍设置</div>
+              <div class="muted-note">像第一次那样重选书桌和时长（会先验证家长密码）。密码、找回码、周末时长和按星期的单独设置都不会被改动。</div>
+              <button id="rerunSetupBtn" class="btn btn-outline" style="margin-top:12px">重新运行设置引导</button>
+            </div>
+            <div class="card">
               <div class="card-title">杀毒软件提示有风险？</div>
               <div class="muted-note">澄时做的事（锁屏、关闭名单外的程序、常驻后台守护）和杀毒软件盯着的可疑行为长得一样，又没有花钱买代码签名证书，所以 Windows SmartScreen 或杀软可能弹「未知发布者」警告，属于误报。澄时全部代码开源、不联网上传任何数据；不放心的话可以只从官方发布页下载，或自己从源码构建后再安装。若杀软拦截了安装，把澄时加入白名单即可。</div>
             </div>
@@ -557,6 +582,7 @@
           <span class="pill-dot"></span><span id="childCaption">今天还剩</span>
         </div>
         <div class="remaining" id="remaining"></div>
+        <div class="remaining-until" id="remainingUntil"></div>
         <div class="child-hint" id="childHint"></div>
         <div id="deskBanner" class="desk-banner hidden"></div>
         <div id="deskAppBanner" class="desk-banner hidden"></div>
@@ -609,6 +635,9 @@
       </div>
     </div>
   </div>
+
+  <!-- ===== 全局轻提示：操作成功的短确认（宿主推送 toast 消息） ===== -->
+  <div id="toastHost" aria-live="polite"></div>
 
   <script src="app.js"></script>
 </body>

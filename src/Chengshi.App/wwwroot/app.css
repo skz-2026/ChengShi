@@ -107,6 +107,17 @@ input, textarea, select { user-select: text; }
 }
 .tb-right { display: flex; align-items: center; padding-right: 8px; }
 
+/* 家长入口：只在孩子视图（守护中/时间用完）出现，其余时候隐藏 */
+#btnParent {
+  width: auto; padding: 0 12px; gap: 6px;
+  font-size: 12px; font-weight: 600;
+  display: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.mode-child #btnParent { display: inline-flex; }
+#btnParent:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
 .tb-btn {
   width: 42px; height: 40px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -232,6 +243,13 @@ input, textarea, select { user-select: text; }
 .accent-hint { color: var(--accent); margin-top: 8px; }
 .accent-hint:empty { display: none; }
 
+/* 就近错误提示：出现在触发操作的控件旁边，而不是页面底部 */
+.inline-error { font-size: 12px; line-height: 1.5; color: var(--warn); margin-top: 8px; }
+
+/* 这些内容家长会想手动划选复制（找回码、统计明细、邮箱） */
+.recovery-box, .detail-row, .feedback-email { user-select: text; cursor: text; }
+.recovery-box { cursor: text; }
+
 /* 按钮 */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -325,6 +343,11 @@ select.input { cursor: pointer; }
 .pill-btn:hover { border-color: var(--accent); }
 .pill-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+/* 护眼提醒的 pill 带眼睛图标：和「能用多久」的时长 pill 长得一样但意思完全不同，图标区分开 */
+.break-pill { display: inline-flex; align-items: center; gap: 6px; }
+.break-pill .ic { width: 13px; height: 13px; color: var(--muted); transition: color .16s var(--ease); }
+.break-pill.on .ic { color: #fff; }
+
 /* 分段页签 */
 .seg-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .seg-tab {
@@ -337,8 +360,8 @@ select.input { cursor: pointer; }
 
 .minutes-big { font-family: var(--font-display); font-size: 34px; font-weight: 600; margin: 10px 0 2px; }
 
-/* 书桌选择卡 */
-.desk-select-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+/* 书桌选择卡：按可用宽度自适应列数，4 张卡不留换行空洞 */
+.desk-select-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .desk-card {
   position: relative; text-align: left;
   border: 1px solid var(--line); border-radius: 12px;
@@ -378,10 +401,11 @@ select.input { cursor: pointer; }
 .hero-greeting { font-family: var(--font-display); font-size: 22px; font-weight: 600; }
 .hero-line { color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.5; }
 
-.desk-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+.desk-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
 .desk-card-row { display: flex; align-items: center; gap: 10px; }
 .desk-card-badge {
-  margin-left: auto; font-size: 10px; color: var(--warn);
+  /* 右上角还有「当前书桌」的勾选圆标，角标往左让一点避免重叠 */
+  margin-left: auto; margin-right: 24px; font-size: 10px; color: var(--warn);
   background: var(--warn-soft); border: 1px solid var(--warn-line);
   border-radius: 8px; padding: 3px 7px;
 }
@@ -439,8 +463,26 @@ select.input { cursor: pointer; }
 /* ============================================================
    设置页
    ============================================================ */
-.settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .settings-head .page-lead { max-width: 560px; }
+
+/* 页内锚点导航：设置项多，吸顶快速跳转 */
+.anchor-nav {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 14px; padding: 8px 0;
+  background: linear-gradient(180deg, var(--canvas) 82%, rgba(245, 244, 241, 0));
+}
+.anchor-link {
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); color: var(--muted);
+  font-family: inherit; font-size: 12px; padding: 5px 12px;
+  cursor: pointer;
+  transition: color .15s var(--ease), border-color .15s var(--ease), background-color .15s var(--ease);
+}
+.anchor-link:hover { color: var(--ink); border-color: var(--line-strong); }
+.anchor-link.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.anchor-target { scroll-margin-top: 54px; }
 
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 20px; align-items: start; flex: 0 0 auto; }
 .settings-main, .settings-side { padding: 0; }
@@ -501,6 +543,13 @@ select.input { cursor: pointer; }
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
+/* 倒计时下方的「预计 HH:mm 用完」：锁屏/睡眠不计时，只是预估 */
+.remaining-until {
+  font-size: 13px; color: var(--muted);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.remaining-until:empty { display: none; }
 .child-hint { color: var(--muted); font-size: 13px; text-align: center; max-width: 440px; margin-top: 12px; line-height: 1.6; }
 
 /* 到点前的分级提醒与「保存进度」宽限：一条不打扰的胶囊横幅 */
@@ -519,10 +568,16 @@ select.input { cursor: pointer; }
   background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
   padding: 16px 14px 13px; text-align: center;
   box-shadow: var(--shadow-card);
+  font-family: inherit;
   transition: transform .18s var(--ease), box-shadow .18s var(--ease);
 }
 .app-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
 .app-tile { position: relative; }
+
+/* 磁贴现在是启动器：可点的给手型，用完的明确不可点 */
+.app-tile.launchable { cursor: pointer; }
+.app-tile.tile-locked { cursor: not-allowed; }
+.app-tile.tile-locked:hover { transform: none; box-shadow: var(--shadow-card); }
 
 /* 单独限时的软件：磁贴带剩余时间；当天用完的置灰加角标 */
 .tile-locked { opacity: .55; }
@@ -622,6 +677,29 @@ select.input { cursor: pointer; }
   .desk-cards { grid-template-columns: 1fr; }
   .dash-grid-2 { grid-template-columns: 1fr; }
 }
+
+/* ============================================================
+   全局轻提示（toast）：操作成功的短确认 / 需要注意的短提醒
+   ============================================================ */
+#toastHost {
+  position: fixed; right: 18px; bottom: 56px; z-index: 60;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  max-width: 340px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--accent); color: #fff;
+  border-radius: 10px; padding: 10px 14px;
+  font-size: 13px; line-height: 1.45;
+  box-shadow: var(--shadow-pop);
+  animation: toastIn .22s var(--ease);
+}
+.toast.leaving { animation: toastOut .2s var(--ease) forwards; }
+.toast .ic { width: 15px; height: 15px; flex: 0 0 15px; }
+.toast.warn { background: #7A4A28; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes toastOut { to { opacity: 0; transform: translateY(6px); } }
 
 /* demo 预览工具条（仅浏览器直接打开时由 JS 注入） */
 #demoBar {

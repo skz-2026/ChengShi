@@ -23,8 +23,20 @@ public partial class AppsWindow : Window
 
     public IReadOnlyList<AllowedApp>? Result { get; private set; }
 
-    private async void OnLoaded(object sender, RoutedEventArgs e)
+    private async void OnLoaded(object sender, RoutedEventArgs e) => await ScanAsync();
+
+    private async void Rescan_Click(object sender, RoutedEventArgs e)
     {
+        _catalogCache = null;
+        await ScanAsync();
+    }
+
+    /// <summary>扫描期间列表可能空好几秒：进度条 + 状态行说清「正在找」，别让家长以为卡死了。</summary>
+    private async Task ScanAsync()
+    {
+        ScanProgress.Visibility = Visibility.Visible;
+        AppList.ItemsSource = null;
+        StatusText.Text = "正在查找本机软件…";
         try
         {
             var catalog = _catalogCache ?? await Task.Run(InstalledAppCatalog.Scan);
@@ -42,6 +54,10 @@ public partial class AppsWindow : Window
             Merge([]);
             ApplyFilter();
             StatusText.Text = "没能扫到开始菜单，仍可从文件添加，或勾选正在运行的程序。";
+        }
+        finally
+        {
+            ScanProgress.Visibility = Visibility.Collapsed;
         }
     }
 
